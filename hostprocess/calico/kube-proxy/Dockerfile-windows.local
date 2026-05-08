@@ -1,15 +1,16 @@
 # Local-build variant of Dockerfile.
-# Skips the linux/amd64 curl stage (which the windows-only buildkit cannot
-# satisfy) and instead consumes pre-fetched kube-proxy.exe + hns.psm1 from
-# dist/. Use build-windows.sh to fetch the artifacts and run buildx.
+#
+# Simplest possible image: extend the upstream sigwindowstools/kube-proxy
+# image and overlay our patched start.ps1. This avoids:
+#   - The cross-platform Linux curl stage (Windows-only buildkit can't run it)
+#   - Re-importing kube-proxy.exe as a fresh layer (Windows snapshotter rejects
+#     it with "configuration registry database is corrupt" error 0x3f1 on
+#     chained COPY operations of large binaries)
+#
+# Result: a single-COPY image whose only diff vs upstream is start.ps1.
 
-ARG BASE="mcr.microsoft.com/oss/kubernetes/windows-host-process-containers-base-image:v0.1.0"
-FROM $BASE
+ARG UPSTREAM="docker.io/sigwindowstools/kube-proxy:v1.34.6-calico-hostprocess"
 
-ENV PATH="C:\Windows\system32;C:\Windows;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;"
+FROM $UPSTREAM
 
-ADD start.ps1 /kube-proxy/start.ps1
-ADD dist/kube-proxy.exe /kube-proxy/kube-proxy.exe
-ADD dist/hns.psm1 /kube-proxy/hns.psm1
-
-ENTRYPOINT ["PowerShell"]
+COPY start.ps1 /kube-proxy/start.ps1
