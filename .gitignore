@@ -1,3 +1,6 @@
 .idea
 .venv
 .vs
+kube-proxy.exe
+kube-proxy.exe.sha256
+hns.psm1

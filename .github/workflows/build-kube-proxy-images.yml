@@ -12,17 +12,31 @@ permissions:
   contents: read
   packages: write
 
+env:
+  K8S_VERSION: v1.34.6
+
 jobs:
   build:
     runs-on: windows-2022
+    defaults:
+      run:
+        working-directory: hostprocess/calico/kube-proxy
     steps:
       - uses: actions/checkout@v4
+
+      - name: fetch kube-proxy.exe + hns.psm1
+        run: |
+          Invoke-WebRequest -OutFile kube-proxy.exe https://dl.k8s.io/$env:K8S_VERSION/bin/windows/amd64/kube-proxy.exe
+          Invoke-WebRequest -OutFile kube-proxy.exe.sha256 https://dl.k8s.io/$env:K8S_VERSION/bin/windows/amd64/kube-proxy.exe.sha256
+          $expected = (Get-Content kube-proxy.exe.sha256).Trim()
+          $actual = (Get-FileHash kube-proxy.exe -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) { throw "kube-proxy.exe sha256 mismatch: expected $expected got $actual" }
+          Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/master/Kubernetes/windows/hns.psm1
 
       - name: docker login ghcr
         run: docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
 
       - name: docker build & push
-        working-directory: hostprocess/calico/kube-proxy
         run: |
-          docker build --build-arg k8sVersion=v1.34.6 -t ghcr.io/appmana/kube-proxy:v1.34.6-calico-hostprocess .
-          docker push ghcr.io/appmana/kube-proxy:v1.34.6-calico-hostprocess
+          docker build -t ghcr.io/appmana/kube-proxy:$env:K8S_VERSION-calico-hostprocess .
+          docker push ghcr.io/appmana/kube-proxy:$env:K8S_VERSION-calico-hostprocess
