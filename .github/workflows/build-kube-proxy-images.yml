@@ -2,15 +2,25 @@
 name: Build Kube-Proxy images
 
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'hostprocess/calico/kube-proxy/**'
+      - '.github/workflows/build-kube-proxy-images.yml'
   workflow_dispatch:
     inputs:
       proxy_version:
-        description: 'Version of kube-proxy to build (ex: v1.27.1)'
-        required: true
-      repository:
-        description: 'Repository to push the image to (ex: docker.io/sigwindowstools)'
+        description: 'Version of kube-proxy to build (ex: v1.34.6)'
         required: false
-        default: 'docker.io/sigwindowstools'
+        default: 'v1.34.6'
+      repository:
+        description: 'Repository to push the image to'
+        required: false
+        default: 'ghcr.io/appmana'
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   build:
@@ -18,14 +28,17 @@ jobs:
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
 
-    - name: Login to DockerHub
-      if: startsWith(github.event.inputs.repository, 'docker.io')
+    - name: Login to GHCR
       uses: docker/login-action@4907a6ddec9925e35a0a9e82d7399ccc52663121 # v4.1.0
       with:
-        username: ${{ secrets.DOCKER_USERNAME }}
-        password: ${{ secrets.DOCKER_SECRET }}
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     - name: Build and push images
+      env:
+        PROXY_VERSION: ${{ github.event.inputs.proxy_version || 'v1.34.6' }}
+        REPOSITORY: ${{ github.event.inputs.repository || 'ghcr.io/appmana' }}
       run: |
         pushd ./hostprocess/calico
-        ./build.sh -p ${{ github.event.inputs.proxy_version }} -r ${{ github.event.inputs.repository }}
+        ./build.sh -p "$PROXY_VERSION" -r "$REPOSITORY"
