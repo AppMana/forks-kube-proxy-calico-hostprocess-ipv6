@@ -120,9 +120,16 @@ if ($extraFeatures.Length -GT 0) {
     Write-Host "Enabling feature gates: $extraFeatures."
 }
 
-# kube-proxy doesn't handle resync if there are pre-exisitng policies, clean them
-# all out before (re)starting kube-proxy.
-$policyLists = Get-HnsPolicyList
+# kube-proxy doesn't handle resync if there are pre-existing ELB policies, clean
+# THEM out before (re)starting kube-proxy. Wipe ELB-type only — wiping ALL
+# PolicyLists destroys non-ELB Calico-managed policies (route encapsulation,
+# OutBoundNAT exception lists, etc.) that pods on this node depend on for their
+# IPv4 default gateway. Symptom: fresh pods get pod IP but no IPv4 default
+# route, so pod->ClusterIP and pod->WAN both silently time out (this is what
+# nuked Unity pods on appmana-003 and -005 on 2026-05-08).
+$policyLists = Get-HnsPolicyList | Where-Object {
+    $_.Policies | Where-Object { $_.Type -eq 'ELB' }
+}
 if ($policyLists) {
     $policyLists | Remove-HnsPolicyList
 }
