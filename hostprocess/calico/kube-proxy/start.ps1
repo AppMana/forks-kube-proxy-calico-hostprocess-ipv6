@@ -46,6 +46,14 @@ if ($kubeProxyVer -match "v([0-9])\.([0-9]+)") {
 # requires 2019 with KB4580390 (Oct 2020)
 $PlatformSupportDSR = $true
 
+# Mixed Windows/Linux clusters need DSR off because Windows DSR breaks
+# cross-node ClusterIP routing when the backend resolves to a Linux pod.
+# Set KUBEPROXY_DISABLE_DSR=true on the DaemonSet to opt out.
+if ($env:KUBEPROXY_DISABLE_DSR -EQ "true") {
+    $PlatformSupportDSR = $false
+    Write-Host "DSR disabled via KUBEPROXY_DISABLE_DSR=true env var."
+}
+
 # This is a workaround since the go-client doesn't know about the path $env:CONTAINER_SANDBOX_MOUNT_POINT
 # go-client is going to be address in a future release:
 #   https://github.com/kubernetes/kubernetes/pull/104490
@@ -70,7 +78,8 @@ if ($kubeProxyGE114 -And $PlatformSupportDSR) {
     $extraFeatures += "WinDSR=true"
     $argList += "--enable-dsr=true"
 } else {
-    Write-Host "DSR feature is not supported."
+    Write-Host "DSR feature is not supported or disabled."
+    $argList += "--enable-dsr=false"
 }
 
 $network = (Get-HnsNetwork | ? Name -EQ $NetworkName)
@@ -87,6 +96,22 @@ if ($network.Type -EQ "Overlay") {
     $sourceVip = (Get-HnsEndpoint | ? Name -EQ "Calico_ep").IpAddress
     $argList += "--source-vip=$sourceVip"
     $extraFeatures += "WinOverlay=true"
+}
+
+# L2Bridge with DSR off also needs --source-vip. Without it kube-proxy registers
+# HCN ELB policies for ClusterIPs but HNS computes a NAT pool against an
+# unresolvable source IP and silently sets IsApplied=false. Result: pod ->
+# ClusterIP TCP times out for every service. Upstream's existing block above
+# only covers Overlay networks; mirror the same discovery for L2Bridge non-DSR.
+if ($network.Type -EQ "L2Bridge" -AND -NOT $PlatformSupportDSR) {
+    Write-Host "Detected L2Bridge with DSR disabled, waiting for Calico host endpoint to be created..."
+    while (-Not (Get-HnsEndpoint | ? Name -EQ "Calico_ep")) {
+        Start-Sleep 1
+    }
+    Write-Host "Host endpoint found."
+    $sourceVip = (Get-HnsEndpoint | ? Name -EQ "Calico_ep").IpAddress
+    $argList += "--source-vip=$sourceVip"
+    Write-Host "Using --source-vip=$sourceVip"
 }
 
 if ($extraFeatures.Length -GT 0) {
