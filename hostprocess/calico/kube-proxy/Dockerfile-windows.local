@@ -1,0 +1,15 @@
+# Local-build variant of Dockerfile.
+# Skips the linux/amd64 curl stage (which the windows-only buildkit cannot
+# satisfy) and instead consumes pre-fetched kube-proxy.exe + hns.psm1 from
+# dist/. Use build-windows.sh to fetch the artifacts and run buildx.
+
+ARG BASE="mcr.microsoft.com/oss/kubernetes/windows-host-process-containers-base-image:v0.1.0"
+FROM $BASE
+
+ENV PATH="C:\Windows\system32;C:\Windows;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;"
+
+ADD start.ps1 /kube-proxy/start.ps1
+ADD dist/kube-proxy.exe /kube-proxy/kube-proxy.exe
+ADD dist/hns.psm1 /kube-proxy/hns.psm1
+
+ENTRYPOINT ["PowerShell"]

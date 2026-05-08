@@ -1,3 +1,4 @@
 .idea
 .venv
 .vs
+hostprocess/calico/kube-proxy/dist/
