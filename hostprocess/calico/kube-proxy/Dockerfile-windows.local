@@ -1,16 +1,26 @@
 # Local-build variant of Dockerfile.
 #
-# Simplest possible image: extend the upstream sigwindowstools/kube-proxy
-# image and overlay our patched start.ps1. This avoids:
-#   - The cross-platform Linux curl stage (Windows-only buildkit can't run it)
-#   - Re-importing kube-proxy.exe as a fresh layer (Windows snapshotter rejects
-#     it with "configuration registry database is corrupt" error 0x3f1 on
-#     chained COPY operations of large binaries)
+# Bases on nanoserver instead of windows-host-process-containers-base-image.
+# That base image is broken on WS2022/Win11 23H2-class builds: hcsshim's
+# ImportLayer fails with "configuration registry database is corrupt"
+# (0x3f1) the moment any child layer is committed against it.
+# See moby/moby#44992 and microsoft/Windows-Containers#574.
 #
-# Result: a single-COPY image whose only diff vs upstream is start.ps1.
+# nanoserver works fine for HostProcess containers (the runAsUserName +
+# hostProcess: true on the pod spec is what actually matters; the special
+# base image only sets up environment variables that we'd inherit but
+# don't strictly need).
+#
+# This image consumes pre-fetched kube-proxy.exe + hns.psm1 from dist/.
+# Use build-windows.sh to download them and run buildx.
 
-ARG UPSTREAM="docker.io/sigwindowstools/kube-proxy:v1.34.6-calico-hostprocess"
+ARG WINDOWS_VERSION="ltsc2022"
+FROM mcr.microsoft.com/windows/nanoserver:${WINDOWS_VERSION}
 
-FROM $UPSTREAM
+ENV PATH="C:\Windows\system32;C:\Windows;C:\WINDOWS\System32\WindowsPowerShell\v1.0\;"
 
 COPY start.ps1 /kube-proxy/start.ps1
+COPY dist/kube-proxy.exe /kube-proxy/kube-proxy.exe
+COPY dist/hns.psm1 /kube-proxy/hns.psm1
+
+ENTRYPOINT ["powershell.exe"]
