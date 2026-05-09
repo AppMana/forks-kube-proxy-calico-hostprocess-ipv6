@@ -5,6 +5,7 @@ on:
     branches: [master]
     paths:
       - 'hostprocess/calico/kube-proxy/**'
+      - 'patches/**'
       - '.github/workflows/build-kube-proxy-images.yml'
   workflow_dispatch:
 
@@ -24,13 +25,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: fetch kube-proxy.exe + hns.psm1
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: build patched kube-proxy.exe + fetch hns.psm1
         run: |
-          Invoke-WebRequest -OutFile kube-proxy.exe https://dl.k8s.io/$env:K8S_VERSION/bin/windows/amd64/kube-proxy.exe
-          Invoke-WebRequest -OutFile kube-proxy.exe.sha256 https://dl.k8s.io/$env:K8S_VERSION/bin/windows/amd64/kube-proxy.exe.sha256
-          $expected = (Get-Content kube-proxy.exe.sha256).Trim()
-          $actual = (Get-FileHash kube-proxy.exe -Algorithm SHA256).Hash.ToLower()
-          if ($expected -ne $actual) { throw "kube-proxy.exe sha256 mismatch: expected $expected got $actual" }
+          git clone --depth 1 --branch $env:K8S_VERSION https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
+          Push-Location $env:RUNNER_TEMP\kubernetes
+          git apply "$env:GITHUB_WORKSPACE\patches\kubernetes-v1.34.6-winkernel-loadbalancer-state.patch"
+          $env:GOOS = "windows"
+          $env:GOARCH = "amd64"
+          go build -o "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe" .\cmd\kube-proxy
+          Pop-Location
           Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/master/Kubernetes/windows/hns.psm1
 
       - name: docker login ghcr
