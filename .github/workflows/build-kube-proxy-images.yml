@@ -3,11 +3,6 @@ name: Build Kube-Proxy images
 on:
   push:
     branches: [master]
-    paths:
-      - 'hostprocess/calico/kube-proxy/**'
-      - 'patches/**'
-      - '.github/workflows/build-kube-proxy-images.yml'
-      - 'README.md'
   workflow_dispatch:
 
 permissions:
