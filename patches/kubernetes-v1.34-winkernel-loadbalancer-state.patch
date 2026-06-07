@@ -1,0 +1,409 @@
+diff --git a/pkg/proxy/winkernel/hns.go b/pkg/proxy/winkernel/hns.go
+index 6c9aaa85790..236b5573f92 100644
+--- a/pkg/proxy/winkernel/hns.go
++++ b/pkg/proxy/winkernel/hns.go
+@@ -23,6 +23,7 @@ import (
+ 	"crypto/sha1"
+ 	"encoding/json"
+ 	"fmt"
++	"net"
+ 	"strings"
+ 
+ 	"github.com/Microsoft/hnslib/hcn"
+@@ -106,15 +107,37 @@ func (hns hns) getNetworkByName(name string) (*hnsNetworkInfo, error) {
+ 			remoteSubnets = append(remoteSubnets, rs)
+ 		}
+ 	}
++	supportsIPv4, supportsIPv6, ipFamilySupportKnown := getNetworkIPFamilySupport(hnsnetwork)
+ 
+ 	return &hnsNetworkInfo{
+-		id:            hnsnetwork.Id,
+-		name:          hnsnetwork.Name,
+-		networkType:   string(hnsnetwork.Type),
+-		remoteSubnets: remoteSubnets,
++		id:                   hnsnetwork.Id,
++		name:                 hnsnetwork.Name,
++		networkType:          string(hnsnetwork.Type),
++		remoteSubnets:        remoteSubnets,
++		ipFamilySupportKnown: ipFamilySupportKnown,
++		supportsIPv4:         supportsIPv4,
++		supportsIPv6:         supportsIPv6,
+ 	}, nil
+ }
+ 
++func getNetworkIPFamilySupport(hnsnetwork *hcn.HostComputeNetwork) (supportsIPv4, supportsIPv6, known bool) {
++	for _, ipam := range hnsnetwork.Ipams {
++		for _, subnet := range ipam.Subnets {
++			ip, _, err := net.ParseCIDR(subnet.IpAddressPrefix)
++			if err != nil {
++				continue
++			}
++			known = true
++			if ip.To4() != nil {
++				supportsIPv4 = true
++			} else {
++				supportsIPv6 = true
++			}
++		}
++	}
++	return supportsIPv4, supportsIPv6, known
++}
++
+ func (hns hns) getAllEndpointsByNetwork(networkName string) (map[string]*(endpointInfo), error) {
+ 	hcnnetwork, err := hns.hcn.GetNetworkByName(networkName)
+ 	if err != nil {
+@@ -316,6 +339,19 @@ func findLoadBalancerID(endpoints []endpointInfo, vip string, protocol, internal
+ 	return loadBalancerIdentifier{protocol: protocol, internalPort: internalPort, externalPort: externalPort, vip: vip, endpointsHash: hash, isIPv6: isIpv6}, nil
+ }
+ 
++func newLoadBalancerInfo(lb *hcn.HostComputeLoadBalancer) *loadBalancerInfo {
++	lbInfo := &loadBalancerInfo{
++		hnsID:     lb.Id,
++		sourceVip: lb.SourceVIP,
++		lbFlags:   lb.Flags,
++	}
++	if len(lb.PortMappings) > 0 {
++		lbInfo.portMappingFlags = lb.PortMappings[0].Flags
++		lbInfo.distributionType = lb.PortMappings[0].DistributionType
++	}
++	return lbInfo
++}
++
+ func (hns hns) getAllLoadBalancers() (map[loadBalancerIdentifier]*loadBalancerInfo, error) {
+ 	lbs, err := hns.hcn.ListLoadBalancers()
+ 	var id loadBalancerIdentifier
+@@ -338,9 +374,7 @@ func (hns hns) getAllLoadBalancers() (map[loadBalancerIdentifier]*loadBalancerIn
+ 		} else {
+ 			id = loadBalancerIdentifier{protocol: uint16(portMap.Protocol), internalPort: portMap.InternalPort, externalPort: portMap.ExternalPort, vip: lb.FrontendVIPs[0], endpointsHash: hash, isIPv6: isIPv6}
+ 		}
+-		loadBalancers[id] = &loadBalancerInfo{
+-			hnsID: lb.Id,
+-		}
++		loadBalancers[id] = newLoadBalancerInfo(&lb)
+ 	}
+ 	klog.V(3).InfoS("Queried load balancers", "count", len(lbs))
+ 	return loadBalancers, nil
+@@ -368,8 +402,15 @@ func (hns hns) getLoadBalancer(endpoints []endpointInfo, flags loadBalancerFlags
+ 	}
+ 
+ 	if lb, found := previousLoadBalancers[id]; found {
+-		klog.V(1).InfoS("Found cached Hns loadbalancer policy resource", "policies", lb)
+-		return lb, nil
++		if lb.matchesDesiredState(sourceVip, flags) {
++			klog.V(1).InfoS("Found cached Hns loadbalancer policy resource", "policies", lb)
++			return lb, nil
++		}
++		klog.V(2).InfoS("Deleting cached Hns loadbalancer policy resource with stale state", "policies", lb, "sourceVip", sourceVip, "flags", flags)
++		if err := hns.deleteLoadBalancer(lb.hnsID); err != nil {
++			return nil, err
++		}
++		delete(previousLoadBalancers, id)
+ 	}
+ 
+ 	lbPortMappingFlags := hcn.LoadBalancerPortMappingFlagsNone
+@@ -434,9 +475,7 @@ func (hns hns) getLoadBalancer(endpoints []endpointInfo, flags loadBalancerFlags
+ 	}
+ 
+ 	klog.V(1).InfoS("Created Hns loadbalancer policy resource", "loadBalancer", lb)
+-	lbInfo := &loadBalancerInfo{
+-		hnsID: lb.Id,
+-	}
++	lbInfo := newLoadBalancerInfo(lb)
+ 	// Add to map of load balancers
+ 	previousLoadBalancers[id] = lbInfo
+ 	return lbInfo, err
+@@ -469,8 +508,11 @@ func (hns hns) updateLoadBalancer(hnsID string,
+ 	}
+ 
+ 	if lb, found := previousLoadBalancers[id]; found {
+-		klog.V(1).InfoS("Found cached Hns loadbalancer policy resource", "policies", lb)
+-		return lb, nil
++		if lb.matchesDesiredState(sourceVip, flags) {
++			klog.V(1).InfoS("Found cached Hns loadbalancer policy resource", "policies", lb)
++			return lb, nil
++		}
++		klog.V(2).InfoS("Updating Hns loadbalancer policy resource with stale cached state", "policies", lb, "sourceVip", sourceVip, "flags", flags)
+ 	}
+ 
+ 	lbPortMappingFlags, lbFlags := getLoadBalancerPolicyFlags(flags)
+@@ -512,9 +554,7 @@ func (hns hns) updateLoadBalancer(hnsID string,
+ 	}
+ 
+ 	klog.V(1).InfoS("Update loadbalancer is successful", "loadBalancer", lb)
+-	lbInfo := &loadBalancerInfo{
+-		hnsID: lb.Id,
+-	}
++	lbInfo := newLoadBalancerInfo(lb)
+ 	// Add to map of load balancers
+ 	previousLoadBalancers[id] = lbInfo
+ 	return lbInfo, err
+diff --git a/pkg/proxy/winkernel/proxier.go b/pkg/proxy/winkernel/proxier.go
+index 46ed064b62f..d09041f091c 100644
+--- a/pkg/proxy/winkernel/proxier.go
++++ b/pkg/proxy/winkernel/proxier.go
+@@ -20,6 +20,7 @@ limitations under the License.
+ package winkernel
+ 
+ import (
++	"errors"
+ 	"fmt"
+ 	"net"
+ 	"os"
+@@ -107,11 +108,28 @@ func (info loadBalancerIngressInfo) String() string {
+ }
+ 
+ type loadBalancerInfo struct {
+-	hnsID string
++	hnsID            string
++	sourceVip        string
++	lbFlags          hcn.LoadBalancerFlags
++	portMappingFlags hcn.LoadBalancerPortMappingFlags
++	distributionType hcn.LoadBalancerDistribution
+ }
+ 
+ func (info loadBalancerInfo) String() string {
+-	return fmt.Sprintf("HnsID:%s", info.hnsID)
++	return fmt.Sprintf("HnsID:%s, SourceVIP:%s, LBFlags:%d, PortMappingFlags:%d, DistributionType:%d", info.hnsID, info.sourceVip, info.lbFlags, info.portMappingFlags, info.distributionType)
++}
++
++func (info loadBalancerInfo) matchesDesiredState(sourceVip string, flags loadBalancerFlags) bool {
++	lbPortMappingFlags, lbFlags := getLoadBalancerPolicyFlags(flags)
++	lbDistributionType := hcn.LoadBalancerDistributionNone
++	if flags.sessionAffinity {
++		lbDistributionType = hcn.LoadBalancerDistributionSourceIP
++	}
++
++	return info.sourceVip == sourceVip &&
++		info.lbFlags == lbFlags &&
++		info.portMappingFlags == lbPortMappingFlags &&
++		info.distributionType == lbDistributionType
+ }
+ 
+ type loadBalancerIdentifier struct {
+@@ -170,10 +188,13 @@ func (info serviceInfo) String() string {
+ }
+ 
+ type hnsNetworkInfo struct {
+-	name          string
+-	id            string
+-	networkType   string
+-	remoteSubnets []*remoteSubnetInfo
++	name                 string
++	id                   string
++	networkType          string
++	remoteSubnets        []*remoteSubnetInfo
++	ipFamilySupportKnown bool
++	supportsIPv4         bool
++	supportsIPv6         bool
+ }
+ 
+ type remoteSubnetInfo struct {
+@@ -190,6 +211,8 @@ const (
+ 	MAX_COUNT_STALE_LOADBALANCERS = 20
+ )
+ 
++var errUnsupportedNetworkIPFamily = errors.New("HNS network does not support requested IP family")
++
+ func newHostNetworkService(hcnImpl HcnService) (HostNetworkService, hcn.SupportedFeatures) {
+ 	var h HostNetworkService
+ 	supportedFeatures := hcnImpl.GetSupportedFeatures()
+@@ -267,6 +290,20 @@ func isOverlay(hnsNetworkInfo *hnsNetworkInfo) bool {
+ 	return strings.EqualFold(hnsNetworkInfo.networkType, NETWORK_TYPE_OVERLAY)
+ }
+ 
++func networkSupportsIPFamily(networkInfo *hnsNetworkInfo, ipFamily v1.IPFamily) bool {
++	if !networkInfo.ipFamilySupportKnown {
++		return true
++	}
++	switch ipFamily {
++	case v1.IPv4Protocol:
++		return networkInfo.supportsIPv4
++	case v1.IPv6Protocol:
++		return networkInfo.supportsIPv6
++	default:
++		return false
++	}
++}
++
+ // StackCompatTester tests whether the required kernel and network are dualstack capable
+ type StackCompatTester interface {
+ 	DualStackCompatible(networkName string) bool
+@@ -308,6 +345,11 @@ func (t DualStackCompatTester) DualStackCompatible(networkName string) bool {
+ 		return false
+ 	}
+ 
++	if !networkSupportsIPFamily(networkInfo, v1.IPv6Protocol) {
++		klog.InfoS("HNS network does not support IPv6, falling back to single-stack", "hnsNetworkName", networkInfo.name)
++		return false
++	}
++
+ 	return true
+ }
+ 
+@@ -798,6 +840,10 @@ func newProxierInternal(
+ 	}
+ 
+ 	klog.V(1).InfoS("Hns Network loaded", "hnsNetworkInfo", hnsNetworkInfo)
++	if !networkSupportsIPFamily(hnsNetworkInfo, ipFamily) {
++		return nil, fmt.Errorf("%w: network %q, ipFamily %s", errUnsupportedNetworkIPFamily, hnsNetworkName, ipFamily)
++	}
++
+ 	isDSR := config.EnableDSR
+ 	if isDSR && !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WinDSR) {
+ 		return nil, fmt.Errorf("WinDSR feature gate not enabled")
+@@ -894,6 +940,10 @@ func NewDualStackProxier(
+ 		nodeName, nodeIPs[v1.IPv6Protocol], recorder, healthzServer,
+ 		healthzBindAddress, config)
+ 	if err != nil {
++		if errors.Is(err, errUnsupportedNetworkIPFamily) {
++			klog.InfoS("HNS network does not support IPv6, running Windows kube-proxy in IPv4-only mode", "err", err)
++			return ipv4Proxier, nil
++		}
+ 		return nil, fmt.Errorf("unable to create ipv6 proxier: %v, nodeName: %s, nodeIP:%v", err, nodeName, nodeIPs[v1.IPv6Protocol])
+ 	}
+ 
+@@ -1519,7 +1569,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 				sourceVip,
+ 				svcInfo.ClusterIP().String(),
+ 				clusterIPEndpoints,
+-				loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
++				loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, localRoutedVIP: true, sessionAffinity: sessionAffinityClientIP},
+ 				Enum(svcInfo.Protocol()),
+ 				uint16(svcInfo.targetPort),
+ 				uint16(svcInfo.Port()),
+@@ -1538,7 +1588,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 				// Cluster IP LoadBalancer creation
+ 				hnsLoadBalancer, err := hns.getLoadBalancer(
+ 					clusterIPEndpoints,
+-					loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
++					loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, localRoutedVIP: true, sessionAffinity: sessionAffinityClientIP},
+ 					sourceVip,
+ 					svcInfo.ClusterIP().String(),
+ 					Enum(svcInfo.Protocol()),
+diff --git a/pkg/proxy/winkernel/proxier_test.go b/pkg/proxy/winkernel/proxier_test.go
+index d6492a92970..ba94f59320e 100644
+--- a/pkg/proxy/winkernel/proxier_test.go
++++ b/pkg/proxy/winkernel/proxier_test.go
+@@ -95,6 +95,16 @@ func newHnsNetwork(networkInfo *hnsNetworkInfo) *hcn.HostComputeNetwork {
+ 		Type:     hcn.NetworkType(networkInfo.networkType),
+ 		Policies: policies,
+ 	}
++	if networkInfo.ipFamilySupportKnown {
++		ipam := hcn.Ipam{Type: "Static"}
++		if networkInfo.supportsIPv4 {
++			ipam.Subnets = append(ipam.Subnets, hcn.Subnet{IpAddressPrefix: "192.168.1.0/24"})
++		}
++		if networkInfo.supportsIPv6 {
++			ipam.Subnets = append(ipam.Subnets, hcn.Subnet{IpAddressPrefix: "192::/64"})
++		}
++		network.Ipams = []hcn.Ipam{ipam}
++	}
+ 	return network
+ }
+ 
+@@ -159,6 +169,56 @@ func getHcnMock(networkType string) *fakehcn.HcnMock {
+ 	return hcnMock
+ }
+ 
++func getHcnMockWithIPFamilySupport(networkType string, supportsIPv4, supportsIPv6 bool) *fakehcn.HcnMock {
++	hnsNetworkInfo := &hnsNetworkInfo{
++		id:                   strings.ToUpper(guid),
++		name:                 testNetwork,
++		networkType:          networkType,
++		ipFamilySupportKnown: true,
++		supportsIPv4:         supportsIPv4,
++		supportsIPv6:         supportsIPv6,
++	}
++	hnsNetwork := newHnsNetwork(hnsNetworkInfo)
++	return fakehcn.NewHcnMock(hnsNetwork)
++}
++
++func TestIPv6ProxierRejectedOnIPv4OnlyHNSNetwork(t *testing.T) {
++	config := config.KubeProxyWinkernelConfiguration{
++		NetworkName: testNetwork,
++	}
++	hcnMock := getHcnMockWithIPFamilySupport("L2Bridge", true, false)
++
++	proxier, err := newProxierInternal(
++		v1.IPv6Protocol,
++		testNodeName,
++		netutils.ParseIPSloppy("fd00::1"),
++		healthcheck.NewFakeServiceHealthServer(),
++		nil,
++		0,
++		hcnMock,
++		&testHostMacProvider{macAddress: macAddress},
++		config,
++		false,
++	)
++
++	assert.Nil(t, proxier)
++	assert.ErrorIs(t, err, errUnsupportedNetworkIPFamily)
++}
++
++func TestCreateRemoteEndpointFailsWhenHNSNetworkLacksEndpointIPFamily(t *testing.T) {
++	hcnMock := getHcnMockWithIPFamilySupport("L2Bridge", true, false)
++	hns := hns{hcn: hcnMock}
++
++	_, err := hns.createEndpoint(&endpointInfo{
++		ip:         epIpAddressRemotev6,
++		isLocal:    false,
++		macAddress: epMacAddress,
++	}, testNetwork)
++
++	assert.Error(t, err)
++	assert.Contains(t, err.Error(), "0x803b000c")
++}
++
+ func TestCreateServiceVip(t *testing.T) {
+ 	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
+ 	if proxier == nil {
+diff --git a/pkg/proxy/winkernel/testing/hcnutils_mock.go b/pkg/proxy/winkernel/testing/hcnutils_mock.go
+index bea3eb17539..9c1853b3ecb 100644
+--- a/pkg/proxy/winkernel/testing/hcnutils_mock.go
++++ b/pkg/proxy/winkernel/testing/hcnutils_mock.go
+@@ -22,6 +22,7 @@ package testing
+ import (
+ 	"errors"
+ 	"fmt"
++	"net"
+ 
+ 	"github.com/Microsoft/hnslib/hcn"
+ )
+@@ -156,9 +157,36 @@ func (hcnObj HcnMock) CreateEndpoint(network *hcn.HostComputeNetwork, endpoint *
+ }
+ 
+ func (hcnObj HcnMock) CreateRemoteEndpoint(network *hcn.HostComputeNetwork, endpoint *hcn.HostComputeEndpoint) (*hcn.HostComputeEndpoint, error) {
++	for _, ipConfig := range endpoint.IpConfigurations {
++		if !networkHasIPFamily(network, ipConfig.IpAddress) {
++			return nil, fmt.Errorf("hcnCreateEndpoint failed in Win32: The provided endpoint configuration is invalid or missing parameters. (0x803b000c)")
++		}
++	}
+ 	return hcnObj.CreateEndpoint(network, endpoint)
+ }
+ 
++func networkHasIPFamily(network *hcn.HostComputeNetwork, ipAddress string) bool {
++	if len(network.Ipams) == 0 {
++		return true
++	}
++	ip := net.ParseIP(ipAddress)
++	if ip == nil {
++		return false
++	}
++	for _, ipam := range network.Ipams {
++		for _, subnet := range ipam.Subnets {
++			subnetIP, _, err := net.ParseCIDR(subnet.IpAddressPrefix)
++			if err != nil {
++				continue
++			}
++			if (ip.To4() != nil) == (subnetIP.To4() != nil) {
++				return true
++			}
++		}
++	}
++	return false
++}
++
+ func (hcnObj HcnMock) DeleteEndpoint(endpoint *hcn.HostComputeEndpoint) error {
+ 	if _, ok := endpointMap[endpoint.Id]; !ok {
+ 		return hcn.EndpointNotFoundError{EndpointID: endpoint.Id}

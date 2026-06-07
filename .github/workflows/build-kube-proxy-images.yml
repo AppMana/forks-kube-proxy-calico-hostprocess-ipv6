@@ -7,6 +7,7 @@ on:
       - 'hostprocess/calico/kube-proxy/**'
       - 'patches/**'
       - '.github/workflows/build-kube-proxy-images.yml'
+      - 'README.md'
   workflow_dispatch:
 
 permissions:
@@ -14,36 +15,103 @@ permissions:
   packages: write
 
 env:
-  K8S_VERSION: v1.34.6
+  REGISTRY: ghcr.io/appmana
+  IMAGE_NAME: kube-proxy
 
 jobs:
-  build:
+  build-windows:
     runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - k8s_version: v1.34.6
+            go_version: 1.24.x
+            patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
+            image_tag: v1.34.6-appmana.post.1-calico-hostprocess
+          - k8s_version: v1.35.5
+            go_version: 1.25.x
+            patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
+            image_tag: v1.35.5-appmana.post.2-calico-hostprocess
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy
+    outputs:
+      registry: ${{ env.REGISTRY }}
+      image-name: ${{ env.IMAGE_NAME }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.24.x'
+          go-version: ${{ matrix.go_version }}
 
-      - name: build patched kube-proxy.exe + fetch hns.psm1
+      - name: Build patched kube-proxy.exe and fetch hns.psm1
         run: |
-          git clone --depth 1 --branch $env:K8S_VERSION https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
+          git clone --depth 1 --branch ${{ matrix.k8s_version }} https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
           Push-Location $env:RUNNER_TEMP\kubernetes
-          git apply "$env:GITHUB_WORKSPACE\patches\kubernetes-v1.34.6-winkernel-loadbalancer-state.patch"
+          git apply "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
+          go test ./pkg/proxy/winkernel/...
           go build -o "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe" .\cmd\kube-proxy
           Pop-Location
           Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/master/Kubernetes/windows/hns.psm1
 
-      - name: docker login ghcr
-        run: docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }}
+      - name: Docker login ghcr
+        if: github.event_name == 'push'
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: docker build & push
+      - name: Build Windows image
         run: |
-          docker build -t ghcr.io/appmana/kube-proxy:$env:K8S_VERSION-calico-hostprocess .
-          docker push ghcr.io/appmana/kube-proxy:$env:K8S_VERSION-calico-hostprocess
+          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}-windows-ltsc2022"
+          docker build `
+            --build-arg WINDOWS_VERSION=ltsc2022 `
+            -t $windowsImage .
+
+      - name: Push Windows image
+        if: github.event_name == 'push'
+        run: |
+          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}-windows-ltsc2022"
+          docker push $windowsImage
+
+  publish-manifest:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    needs: [build-windows]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - k8s_version: v1.34.6
+            image_tag: v1.34.6-appmana.post.1-calico-hostprocess
+          - k8s_version: v1.35.5
+            image_tag: v1.35.5-appmana.post.2-calico-hostprocess
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Docker login ghcr
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: Publish multi-platform manifest
+        run: |
+          set -euo pipefail
+          manifest_image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}"
+          windows_image="${manifest_image}-windows-ltsc2022"
+          upstream_image="registry.k8s.io/kube-proxy:${{ matrix.k8s_version }}"
+          linux_digest="$(
+            docker buildx imagetools inspect --raw "$upstream_image" |
+              jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' |
+              head -n 1
+          )"
+          if [ -z "$linux_digest" ] || [ "$linux_digest" = "null" ]; then
+            echo "Could not find linux/amd64 digest for $upstream_image" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create \
+            --tag "$manifest_image" \
+            "${upstream_image}@${linux_digest}" \
+            "$windows_image"
+
+          docker buildx imagetools inspect "$manifest_image"
