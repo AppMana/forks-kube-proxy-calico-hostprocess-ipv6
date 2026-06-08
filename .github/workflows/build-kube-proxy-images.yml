@@ -54,7 +54,11 @@ jobs:
           Assert-LastExitCode
           Push-Location $env:RUNNER_TEMP\kubernetes
           git config core.autocrlf false
-          git apply --whitespace=nowarn "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
+          $patchPath = "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
+          $normalizedPatchPath = "$env:RUNNER_TEMP\${{ matrix.patch_file }}"
+          $patchText = [System.IO.File]::ReadAllText($patchPath).Replace("`r`n", "`n")
+          [System.IO.File]::WriteAllText($normalizedPatchPath, $patchText, [System.Text.UTF8Encoding]::new($false))
+          git apply --whitespace=nowarn $normalizedPatchPath
           Assert-LastExitCode
           if (-not (Select-String -Path .\pkg\proxy\winkernel\proxier.go -Pattern "reconciling current HNS state" -SimpleMatch -Quiet)) {
             throw "patched proxier.go does not contain stale-HNS reconciliation marker"
