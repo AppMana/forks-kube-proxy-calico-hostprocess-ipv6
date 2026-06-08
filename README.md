@@ -6,8 +6,8 @@ Calico Windows/Linux k0s clusters.
 Published multi-platform manifests:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.1-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.2-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
 ```
 
 Version matrix:
@@ -78,7 +78,7 @@ spec:
           runAsUserName: "NT AUTHORITY\\system"
       containers:
       - name: kube-proxy
-        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.2-calico-hostprocess
+        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
         args:
         - "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/start.ps1"
         workingDir: "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/"
@@ -102,8 +102,8 @@ spec:
           name: kube-proxy
 ```
 
-Use `v1.34.6-appmana.post.1-calico-hostprocess` for Kubernetes/k0s 1.34 and
-Calico 3.29. Use `v1.35.5-appmana.post.2-calico-hostprocess` for
+Use `v1.34.6-appmana.post.2-calico-hostprocess` for Kubernetes/k0s 1.34 and
+Calico 3.29. Use `v1.35.5-appmana.post.3-calico-hostprocess` for
 Kubernetes/k0s 1.35 and Calico 3.31.
 
 ## BGP and DSR requirements
@@ -123,9 +123,17 @@ enabled, a Windows pod connecting to a Linux-backed ClusterIP can receive the
 reply directly from the Linux pod IP instead of the ClusterIP, and Windows drops
 the TCP stream.
 
-Calico must create the `Calico` HNS L2Bridge network and `Calico_ep` host
-endpoint before kube-proxy starts. The start script waits for both and passes
-`--source-vip=<Calico_ep IPv4>` when running L2Bridge with DSR disabled.
+The current `start.ps1` waits for the `Calico` HNS L2Bridge network and, when
+DSR is disabled, `Calico_ep` so it can pass `--source-vip=<Calico_ep IPv4>`.
+That ordering is not sufficient for a fresh kind/QEMU Windows node where
+Calico HostProcess startup reaches the Kubernetes API through the in-cluster
+service IP: kube-proxy waits for Calico HNS, while Calico waits for the service
+IP path that kube-proxy would program. Treat `kube-proxy-windows` being
+Kubernetes-Ready while it is still printing `Waiting for HNS network Calico to
+be created...` as a bootstrap failure, not a validated datapath.
+
+The Calico runbook preflights this by requiring `C:\CalicoWindows\nodename`,
+HNS `Calico`, and HNS `Calico_ep` before running the health matrix.
 
 ## Build and publish
 
@@ -133,10 +141,10 @@ GitHub Actions builds on every push to `master` when the kube-proxy workflow,
 patches, or HostProcess files change. It publishes:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.1-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.1-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.2-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.2-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
 ```
 
 The tags without the `-windows-ltsc2022` suffix are the multi-platform

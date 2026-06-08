@@ -138,7 +138,7 @@ index 392cd79cf99..1e35136893b 100644
  	previousLoadBalancers[id] = lbInfo
  	return lbInfo, err
 diff --git a/pkg/proxy/winkernel/proxier.go b/pkg/proxy/winkernel/proxier.go
-index 4cb12eda389..7c95e72f0bd 100644
+index 4cb12eda389..83abeac47d9 100644
 --- a/pkg/proxy/winkernel/proxier.go
 +++ b/pkg/proxy/winkernel/proxier.go
 @@ -20,6 +20,7 @@ limitations under the License.
@@ -262,26 +262,8 @@ index 4cb12eda389..7c95e72f0bd 100644
  		return nil, fmt.Errorf("unable to create ipv6 proxier: %v, nodeName: %s, nodeIP:%v", err, nodeName, nodeIPs[v1.IPv6Protocol])
  	}
  
-@@ -1522,7 +1572,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
- 				sourceVip,
- 				svcInfo.ClusterIP().String(),
- 				clusterIPEndpoints,
--				loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
-+				loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, localRoutedVIP: true, sessionAffinity: sessionAffinityClientIP},
- 				Enum(svcInfo.Protocol()),
- 				uint16(svcInfo.targetPort),
- 				uint16(svcInfo.Port()),
-@@ -1541,7 +1591,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
- 				// Cluster IP LoadBalancer creation
- 				hnsLoadBalancer, err := hns.getLoadBalancer(
- 					clusterIPEndpoints,
--					loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
-+					loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, localRoutedVIP: true, sessionAffinity: sessionAffinityClientIP},
- 					sourceVip,
- 					svcInfo.ClusterIP().String(),
- 					Enum(svcInfo.Protocol()),
 diff --git a/pkg/proxy/winkernel/proxier_test.go b/pkg/proxy/winkernel/proxier_test.go
-index 4ebce722b93..5e59f061c32 100644
+index 4ebce722b93..4a20028e2a5 100644
 --- a/pkg/proxy/winkernel/proxier_test.go
 +++ b/pkg/proxy/winkernel/proxier_test.go
 @@ -95,6 +95,16 @@ func newHnsNetwork(networkInfo *hnsNetworkInfo) *hcn.HostComputeNetwork {
@@ -358,8 +340,69 @@ index 4ebce722b93..5e59f061c32 100644
  func TestCreateServiceVip(t *testing.T) {
  	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
  	if proxier == nil {
+@@ -1514,6 +1574,60 @@ func TestClusterIPLBInCreateDsrLoadBalancer(t *testing.T) {
+ 	}
+ }
+ 
++func TestClusterIPLBKeepsSourceVIPOnL2BridgeNonDSR(t *testing.T) {
++	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_L2BRIDGE, false)
++	assert.NotNil(t, proxier, "Failed to create proxier")
++
++	hcnMock := proxier.hcn.(*fakehcn.HcnMock)
++	hcnMock.DropSourceVIPForUnsupportedClusterIPFlags = true
++
++	svcIP := "10.20.30.41"
++	svcPort := 80
++	svcPortName := proxy.ServicePortName{
++		NamespacedName: makeNSN("ns1", "svc1"),
++		Port:           "p80",
++		Protocol:       v1.ProtocolTCP,
++	}
++
++	makeServiceMap(proxier,
++		makeTestService(svcPortName.Namespace, svcPortName.Name, func(svc *v1.Service) {
++			svc.Spec.Type = v1.ServiceTypeClusterIP
++			svc.Spec.ClusterIP = svcIP
++			svc.Spec.Ports = []v1.ServicePort{{
++				Name:     svcPortName.Port,
++				Port:     int32(svcPort),
++				Protocol: v1.ProtocolTCP,
++			}}
++		}),
++	)
++	populateEndpointSlices(proxier,
++		makeTestEndpointSlice(svcPortName.Namespace, svcPortName.Name, 1, func(eps *discovery.EndpointSlice) {
++			eps.AddressType = discovery.AddressTypeIPv4
++			eps.Endpoints = []discovery.Endpoint{{
++				Addresses: []string{epIpAddressRemote},
++				NodeName:  ptr.To("testhost2"),
++			}}
++			eps.Ports = []discovery.EndpointPort{{
++				Name:     ptr.To(svcPortName.Port),
++				Port:     ptr.To(int32(svcPort)),
++				Protocol: ptr.To(v1.ProtocolTCP),
++			}}
++		}),
++	)
++
++	proxier.setInitialized(true)
++	proxier.syncProxyRules()
++
++	svcInfo := proxier.svcPortMap[svcPortName].(*serviceInfo)
++	assert.NotEmpty(t, svcInfo.hnsID, "ClusterIP load balancer should be created")
++
++	clusterIPLb, err := proxier.hcn.GetLoadBalancerByID(svcInfo.hnsID)
++	assert.NoError(t, err)
++	assert.Equal(t, proxier.sourceVip, clusterIPLb.SourceVIP)
++	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsILB, "ClusterIP load balancer should not request ILB when source VIP is required")
++	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP, "ClusterIP load balancer should not request LocalRoutedVIP when source VIP is required")
++}
++
+ func TestEndpointSliceWithInternalPortDifferentFromServicePort(t *testing.T) {
+ 	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
+ 	assert.NotNil(t, proxier, "Failed to create proxier")
 diff --git a/pkg/proxy/winkernel/testing/hcnutils_mock.go b/pkg/proxy/winkernel/testing/hcnutils_mock.go
-index 85a73884abf..94fd4702c45 100644
+index 85a73884abf..220fadc471c 100644
 --- a/pkg/proxy/winkernel/testing/hcnutils_mock.go
 +++ b/pkg/proxy/winkernel/testing/hcnutils_mock.go
 @@ -22,6 +22,7 @@ package testing
@@ -370,7 +413,21 @@ index 85a73884abf..94fd4702c45 100644
  
  	"github.com/Microsoft/hnslib/hcn"
  )
-@@ -157,9 +158,36 @@ func (hcnObj HcnMock) CreateEndpoint(network *hcn.HostComputeNetwork, endpoint *
+@@ -34,9 +35,10 @@ var (
+ )
+ 
+ type HcnMock struct {
+-	supportedFeatures            hcn.SupportedFeatures
+-	network                      *hcn.HostComputeNetwork
+-	ShouldFailDeleteLoadBalancer bool
++	supportedFeatures                         hcn.SupportedFeatures
++	network                                   *hcn.HostComputeNetwork
++	ShouldFailDeleteLoadBalancer              bool
++	DropSourceVIPForUnsupportedClusterIPFlags bool
+ }
+ 
+ func (hcnObj HcnMock) generateEndpointGuid() (endpointId string, endpointName string) {
+@@ -157,9 +159,36 @@ func (hcnObj HcnMock) CreateEndpoint(network *hcn.HostComputeNetwork, endpoint *
  }
  
  func (hcnObj HcnMock) CreateRemoteEndpoint(network *hcn.HostComputeNetwork, endpoint *hcn.HostComputeEndpoint) (*hcn.HostComputeEndpoint, error) {
@@ -407,3 +464,16 @@ index 85a73884abf..94fd4702c45 100644
  func (hcnObj HcnMock) DeleteEndpoint(endpoint *hcn.HostComputeEndpoint) error {
  	if _, ok := endpointMap[endpoint.Id]; !ok {
  		return hcn.EndpointNotFoundError{EndpointID: endpoint.Id}
+@@ -201,6 +230,12 @@ func (hcnObj HcnMock) CreateLoadBalancer(loadBalancer *hcn.HostComputeLoadBalanc
+ 		}
+ 	}
+ 	loadBalancer.Id = hcnObj.generateLoadbalancerGuid()
++	if hcnObj.DropSourceVIPForUnsupportedClusterIPFlags && len(loadBalancer.PortMappings) > 0 {
++		flags := loadBalancer.PortMappings[0].Flags
++		if flags&hcn.LoadBalancerPortMappingFlagsILB != 0 || flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP != 0 {
++			loadBalancer.SourceVIP = ""
++		}
++	}
+ 	loadbalancerMap[loadBalancer.Id] = loadBalancer
+ 	return loadBalancer, nil
+ }
