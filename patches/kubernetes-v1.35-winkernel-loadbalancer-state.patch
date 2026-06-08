@@ -138,7 +138,7 @@ index 392cd79c..1e351368 100644
  	previousLoadBalancers[id] = lbInfo
  	return lbInfo, err
 diff --git a/pkg/proxy/winkernel/proxier.go b/pkg/proxy/winkernel/proxier.go
-index 4cb12eda..6dcee912 100644
+index 4cb12eda..c5c78897 100644
 --- a/pkg/proxy/winkernel/proxier.go
 +++ b/pkg/proxy/winkernel/proxier.go
 @@ -20,6 +20,7 @@ limitations under the License.
@@ -149,7 +149,7 @@ index 4cb12eda..6dcee912 100644
  	"fmt"
  	"net"
  	"os"
-@@ -107,11 +108,28 @@ func (info loadBalancerIngressInfo) String() string {
+@@ -107,11 +108,32 @@ func (info loadBalancerIngressInfo) String() string {
  }
  
  type loadBalancerInfo struct {
@@ -177,12 +177,38 @@ index 4cb12eda..6dcee912 100644
 +		info.lbFlags == lbFlags &&
 +		info.portMappingFlags == lbPortMappingFlags &&
 +		info.distributionType == lbDistributionType
++}
++
++func (info loadBalancerInfo) matchesClusterIPSourceVIP(sourceVip string) bool {
++	return info.sourceVip == sourceVip
  }
  
  type loadBalancerIdentifier struct {
-@@ -170,10 +188,13 @@ func (info serviceInfo) String() string {
+@@ -169,11 +191,35 @@ func (info serviceInfo) String() string {
+ 	return svcInfoStr
  }
  
++func (proxier *Proxier) policyAppliedNeedsReconcile(svcInfo *serviceInfo, queriedLoadBalancers map[loadBalancerIdentifier]*loadBalancerInfo) bool {
++	if svcInfo.hnsID == "" {
++		klog.V(4).InfoS("Policy was marked applied but has no HNS load balancer ID", "serviceInfo", svcInfo)
++		return true
++	}
++
++	for _, lb := range queriedLoadBalancers {
++		if lb.hnsID != svcInfo.hnsID {
++			continue
++		}
++		if !strings.EqualFold(proxier.network.networkType, NETWORK_TYPE_OVERLAY) && !proxier.isDSR && !lb.matchesClusterIPSourceVIP(proxier.sourceVip) {
++			klog.V(4).InfoS("Policy was marked applied but HNS load balancer state is stale; reconciling current HNS state", "serviceInfo", svcInfo, "hnsID", svcInfo.hnsID, "sourceVip", lb.sourceVip, "expectedSourceVip", proxier.sourceVip)
++			return true
++		}
++		return false
++	}
++
++	klog.V(4).InfoS("Policy was marked applied but HNS load balancer is missing; reconciling current HNS state", "serviceInfo", svcInfo, "hnsID", svcInfo.hnsID)
++	return true
++}
++
  type hnsNetworkInfo struct {
 -	name          string
 -	id            string
@@ -198,7 +224,7 @@ index 4cb12eda..6dcee912 100644
  }
  
  type remoteSubnetInfo struct {
-@@ -191,6 +212,8 @@ const (
+@@ -191,6 +237,8 @@ const (
  	MAX_COUNT_STALE_LOADBALANCERS = 20
  )
  
@@ -207,7 +233,7 @@ index 4cb12eda..6dcee912 100644
  func newHostNetworkService(hcnImpl HcnService) (HostNetworkService, hcn.SupportedFeatures) {
  	var h HostNetworkService
  	supportedFeatures := hcnImpl.GetSupportedFeatures()
-@@ -268,6 +291,20 @@ func isOverlay(hnsNetworkInfo *hnsNetworkInfo) bool {
+@@ -268,6 +316,20 @@ func isOverlay(hnsNetworkInfo *hnsNetworkInfo) bool {
  	return strings.EqualFold(hnsNetworkInfo.networkType, NETWORK_TYPE_OVERLAY)
  }
  
@@ -228,7 +254,7 @@ index 4cb12eda..6dcee912 100644
  // StackCompatTester tests whether the required kernel and network are dualstack capable
  type StackCompatTester interface {
  	DualStackCompatible(networkName string) bool
-@@ -309,6 +346,11 @@ func (t DualStackCompatTester) DualStackCompatible(networkName string) bool {
+@@ -309,6 +371,11 @@ func (t DualStackCompatTester) DualStackCompatible(networkName string) bool {
  		return false
  	}
  
@@ -240,7 +266,7 @@ index 4cb12eda..6dcee912 100644
  	return true
  }
  
-@@ -799,6 +841,10 @@ func newProxierInternal(
+@@ -799,6 +866,10 @@ func newProxierInternal(
  	}
  
  	klog.V(1).InfoS("Hns Network loaded", "hnsNetworkInfo", hnsNetworkInfo)
@@ -251,7 +277,7 @@ index 4cb12eda..6dcee912 100644
  	isDSR := config.EnableDSR
  	if isDSR && !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WinDSR) {
  		return nil, fmt.Errorf("WinDSR feature gate not enabled")
-@@ -895,6 +941,10 @@ func NewDualStackProxier(
+@@ -895,6 +966,10 @@ func NewDualStackProxier(
  		nodeName, nodeIPs[v1.IPv6Protocol], recorder, healthzServer,
  		healthzBindAddress, config)
  	if err != nil {
@@ -262,13 +288,16 @@ index 4cb12eda..6dcee912 100644
  		return nil, fmt.Errorf("unable to create ipv6 proxier: %v, nodeName: %s, nodeIP:%v", err, nodeName, nodeIPs[v1.IPv6Protocol])
  	}
  
-@@ -1287,8 +1337,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+@@ -1287,8 +1362,10 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
  		}
  
  		if svcInfo.policyApplied {
 -			klog.V(4).InfoS("Policy already applied", "serviceInfo", svcInfo)
 -			continue
-+			klog.V(4).InfoS("Policy was applied in a previous sync; reconciling current HNS state", "serviceInfo", svcInfo)
++			if !proxier.policyAppliedNeedsReconcile(svcInfo, queriedLoadBalancers) {
++				klog.V(4).InfoS("Policy already applied", "serviceInfo", svcInfo)
++				continue
++			}
  		}
  
  		if strings.EqualFold(proxier.network.networkType, NETWORK_TYPE_OVERLAY) {
