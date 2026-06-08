@@ -6,8 +6,8 @@ Calico Windows/Linux k0s clusters.
 Published multi-platform manifests:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
 ```
 
 Version matrix:
@@ -47,6 +47,65 @@ The HostProcess start script also avoids deleting all HNS policy lists. It only
 removes ELB policies, leaving Calico route and OutBoundNAT policies intact for
 existing pods.
 
+## Fixed issue: stale ClusterIP ELB state
+
+The live AppMana failure seen during the Unity Windows pod outage was not a
+generic Calico/BGP failure. Windows pods could reach CoreDNS pod endpoint IPs
+directly, but DNS through the kube-dns ClusterIP timed out.
+
+The failing shape on Windows was:
+
+```text
+pod -> CoreDNS endpoint IP:53       works
+pod -> kube-dns ClusterIP:53        times out
+HNS ELB PolicyList for ClusterIP    IsApplied=false
+kube-proxy log                     "Policy already applied"
+```
+
+That points at Windows kube-proxy's ClusterIP/HNS ELB reconciliation. The
+patched image correctly starts with `--enable-dsr=false` and
+`--source-vip=<Calico_ep IPv4>`, and the ClusterIP policies are present in HNS.
+The bad state is that HNS has the ELB PolicyList object but did not apply it to
+VFP. In that state `Get-HnsPolicyList` shows `IsApplied: false`, while the
+policy allocator data has `Tag: VFP ELB Policy Non Dsr` and an empty
+`SourceVip`.
+
+The important kube-proxy code path is:
+
+```text
+syncProxyRules()
+  queries HNS endpoints and load balancers
+  skips a service immediately when svcInfo.policyApplied is true
+  only later calls hns.getLoadBalancer()/hns.updateLoadBalancer()
+```
+
+So kube-proxy can keep an in-memory `policyApplied=true` and skip a service
+before comparing the current HNS load balancer state. Our previous test only
+proved that ClusterIP load balancers do not request the unsupported
+`ILB`/`LocalRoutedVIP` flag combination when SourceVIP is required. That does
+not reproduce this outage on exact Kubernetes v1.34/v1.35 tags, because those
+upstream call sites already omit those flags.
+
+The post.3/post.4 images add a regression test that models an HNS ClusterIP
+load balancer that exists but lost the desired SourceVIP/applied state while
+kube-proxy still has `svcInfo.policyApplied=true`. The fix keeps
+`policyApplied` as bookkeeping only; every sync now reconciles current HNS
+state instead of skipping the service before `hns.getLoadBalancer()` or
+`hns.updateLoadBalancer()` can repair stale ELB state.
+
+Operationally, diagnose this before restarting random Calico components:
+
+```powershell
+$dnsVip = "10.152.184.10"
+Get-HnsPolicyList |
+  Where-Object { $_.Policies | Where-Object { $_.Type -eq "ELB" -and $_.VIP -eq $dnsVip } } |
+  Select-Object ID, IsApplied, @{n="Policies";e={$_.Policies | ConvertTo-Json -Compress}}
+```
+
+If direct CoreDNS endpoint connectivity works but the ClusterIP policy has
+`IsApplied=false`, roll the Windows kube-proxy image to the matching post.3 or
+post.4 tag and re-check the HNS policy state.
+
 ## Windows DaemonSet
 
 Use the image matching the Kubernetes/k0s minor version:
@@ -78,7 +137,7 @@ spec:
           runAsUserName: "NT AUTHORITY\\system"
       containers:
       - name: kube-proxy
-        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
+        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
         args:
         - "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/start.ps1"
         workingDir: "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/"
@@ -102,8 +161,8 @@ spec:
           name: kube-proxy
 ```
 
-Use `v1.34.6-appmana.post.2-calico-hostprocess` for Kubernetes/k0s 1.34 and
-Calico 3.29. Use `v1.35.5-appmana.post.3-calico-hostprocess` for
+Use `v1.34.6-appmana.post.3-calico-hostprocess` for Kubernetes/k0s 1.34 and
+Calico 3.29. Use `v1.35.5-appmana.post.4-calico-hostprocess` for
 Kubernetes/k0s 1.35 and Calico 3.31.
 
 ## BGP and DSR requirements
@@ -141,10 +200,10 @@ GitHub Actions builds on every push to `master` when the kube-proxy workflow,
 patches, or HostProcess files change. It publishes:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.2-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.3-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
 ```
 
 The tags without the `-windows-ltsc2022` suffix are the multi-platform

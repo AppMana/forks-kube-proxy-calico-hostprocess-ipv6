@@ -138,7 +138,7 @@ index 6c9aaa85..236b5573 100644
  	previousLoadBalancers[id] = lbInfo
  	return lbInfo, err
 diff --git a/pkg/proxy/winkernel/proxier.go b/pkg/proxy/winkernel/proxier.go
-index 46ed064b..ccefc918 100644
+index 46ed064b..af674e6e 100644
 --- a/pkg/proxy/winkernel/proxier.go
 +++ b/pkg/proxy/winkernel/proxier.go
 @@ -20,6 +20,7 @@ limitations under the License.
@@ -262,8 +262,18 @@ index 46ed064b..ccefc918 100644
  		return nil, fmt.Errorf("unable to create ipv6 proxier: %v, nodeName: %s, nodeIP:%v", err, nodeName, nodeIPs[v1.IPv6Protocol])
  	}
  
+@@ -1284,8 +1334,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 		}
+ 
+ 		if svcInfo.policyApplied {
+-			klog.V(4).InfoS("Policy already applied", "serviceInfo", svcInfo)
+-			continue
++			klog.V(4).InfoS("Policy was applied in a previous sync; reconciling current HNS state", "serviceInfo", svcInfo)
+ 		}
+ 
+ 		if strings.EqualFold(proxier.network.networkType, NETWORK_TYPE_OVERLAY) {
 diff --git a/pkg/proxy/winkernel/proxier_test.go b/pkg/proxy/winkernel/proxier_test.go
-index d6492a92..ee970119 100644
+index d6492a92..b8f5372e 100644
 --- a/pkg/proxy/winkernel/proxier_test.go
 +++ b/pkg/proxy/winkernel/proxier_test.go
 @@ -95,6 +95,16 @@ func newHnsNetwork(networkInfo *hnsNetworkInfo) *hcn.HostComputeNetwork {
@@ -340,7 +350,7 @@ index d6492a92..ee970119 100644
  func TestCreateServiceVip(t *testing.T) {
  	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
  	if proxier == nil {
-@@ -1514,6 +1574,60 @@ func TestClusterIPLBInCreateDsrLoadBalancer(t *testing.T) {
+@@ -1514,6 +1574,121 @@ func TestClusterIPLBInCreateDsrLoadBalancer(t *testing.T) {
  	}
  }
  
@@ -396,6 +406,67 @@ index d6492a92..ee970119 100644
 +	assert.Equal(t, proxier.sourceVip, clusterIPLb.SourceVIP)
 +	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsILB, "ClusterIP load balancer should not request ILB when source VIP is required")
 +	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP, "ClusterIP load balancer should not request LocalRoutedVIP when source VIP is required")
++}
++
++func TestClusterIPLBReconcilesStaleHNSStateAfterPolicyApplied(t *testing.T) {
++	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), "L2Bridge", false)
++	assert.NotNil(t, proxier, "Failed to create proxier")
++
++	svcIP := "10.20.30.42"
++	svcPort := 53
++	svcPortName := proxy.ServicePortName{
++		NamespacedName: makeNSN("kube-system", "kube-dns"),
++		Port:           "dns",
++		Protocol:       v1.ProtocolUDP,
++	}
++
++	makeServiceMap(proxier,
++		makeTestService(svcPortName.Namespace, svcPortName.Name, func(svc *v1.Service) {
++			svc.Spec.Type = v1.ServiceTypeClusterIP
++			svc.Spec.ClusterIP = svcIP
++			svc.Spec.Ports = []v1.ServicePort{{
++				Name:     svcPortName.Port,
++				Port:     int32(svcPort),
++				Protocol: v1.ProtocolUDP,
++			}}
++		}),
++	)
++	populateEndpointSlices(proxier,
++		makeTestEndpointSlice(svcPortName.Namespace, svcPortName.Name, 1, func(eps *discovery.EndpointSlice) {
++			eps.AddressType = discovery.AddressTypeIPv4
++			eps.Endpoints = []discovery.Endpoint{{
++				Addresses: []string{epIpAddressRemote},
++				NodeName:  ptr.To("testhost2"),
++			}}
++			eps.Ports = []discovery.EndpointPort{{
++				Name:     ptr.To(svcPortName.Port),
++				Port:     ptr.To(int32(svcPort)),
++				Protocol: ptr.To(v1.ProtocolUDP),
++			}}
++		}),
++	)
++
++	proxier.setInitialized(true)
++	proxier.syncProxyRules()
++
++	svcInfo := proxier.svcPortMap[svcPortName].(*serviceInfo)
++	assert.True(t, svcInfo.policyApplied, "policyApplied should be set after the first successful sync")
++	assert.NotEmpty(t, svcInfo.hnsID, "ClusterIP load balancer should be created")
++
++	clusterIPLb, err := proxier.hcn.GetLoadBalancerByID(svcInfo.hnsID)
++	assert.NoError(t, err)
++	assert.Equal(t, proxier.sourceVip, clusterIPLb.SourceVIP)
++
++	// Model HNS retaining the ClusterIP ELB object but losing the desired
++	// SourceVIP/applied state. kube-proxy must not trust policyApplied and skip
++	// this service on the next sync.
++	clusterIPLb.SourceVIP = ""
++
++	proxier.syncProxyRules()
++
++	reconciledLB, err := proxier.hcn.GetLoadBalancerByID(svcInfo.hnsID)
++	assert.NoError(t, err)
++	assert.Equal(t, proxier.sourceVip, reconciledLB.SourceVIP)
 +}
 +
  func TestEndpointSliceWithInternalPortDifferentFromServicePort(t *testing.T) {
