@@ -6,8 +6,8 @@ Calico Windows/Linux k0s clusters.
 Published multi-platform manifests:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.4-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.5-calico-hostprocess
 ```
 
 Version matrix:
@@ -21,6 +21,11 @@ Each tag is a manifest list:
 
 - `linux/amd64`: upstream `registry.k8s.io/kube-proxy:<version>`.
 - `windows/amd64/ltsc2022`: AppMana patched HostProcess image.
+
+Do not use `v1.34.6-appmana.post.3-calico-hostprocess` or
+`v1.35.5-appmana.post.4-calico-hostprocess`. Those tags were published by a
+workflow that allowed `git apply` to fail on the Windows runner, so their
+Windows binaries did not include the stale-ELB reconciliation fix.
 
 ## What is patched
 
@@ -86,7 +91,7 @@ proved that ClusterIP load balancers do not request the unsupported
 not reproduce this outage on exact Kubernetes v1.34/v1.35 tags, because those
 upstream call sites already omit those flags.
 
-The post.3/post.4 images add a regression test that models an HNS ClusterIP
+The post.4/post.5 images add a regression test that models an HNS ClusterIP
 load balancer that exists but lost the desired SourceVIP/applied state while
 kube-proxy still has `svcInfo.policyApplied=true`. The fix keeps
 `policyApplied` as bookkeeping only; every sync now reconciles current HNS
@@ -103,8 +108,8 @@ Get-HnsPolicyList |
 ```
 
 If direct CoreDNS endpoint connectivity works but the ClusterIP policy has
-`IsApplied=false`, roll the Windows kube-proxy image to the matching post.3 or
-post.4 tag and re-check the HNS policy state.
+`IsApplied=false`, roll the Windows kube-proxy image to the matching post.4 or
+post.5 tag and re-check the HNS policy state.
 
 ## Windows DaemonSet
 
@@ -137,7 +142,7 @@ spec:
           runAsUserName: "NT AUTHORITY\\system"
       containers:
       - name: kube-proxy
-        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
+        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.5-calico-hostprocess
         args:
         - "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/start.ps1"
         workingDir: "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/"
@@ -161,8 +166,8 @@ spec:
           name: kube-proxy
 ```
 
-Use `v1.34.6-appmana.post.3-calico-hostprocess` for Kubernetes/k0s 1.34 and
-Calico 3.29. Use `v1.35.5-appmana.post.4-calico-hostprocess` for
+Use `v1.34.6-appmana.post.4-calico-hostprocess` for Kubernetes/k0s 1.34 and
+Calico 3.29. Use `v1.35.5-appmana.post.5-calico-hostprocess` for
 Kubernetes/k0s 1.35 and Calico 3.31.
 
 ## BGP and DSR requirements
@@ -200,10 +205,10 @@ GitHub Actions builds on every push to `master` when the kube-proxy workflow,
 patches, or HostProcess files change. It publishes:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.3-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.4-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.4-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.4-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.5-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.5-calico-hostprocess
 ```
 
 The tags without the `-windows-ltsc2022` suffix are the multi-platform

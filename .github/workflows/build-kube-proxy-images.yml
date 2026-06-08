@@ -23,11 +23,11 @@ jobs:
           - k8s_version: v1.34.6
             go_version: 1.24.x
             patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.3-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.4-calico-hostprocess
           - k8s_version: v1.35.5
             go_version: 1.25.x
             patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.4-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.5-calico-hostprocess
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy
@@ -43,13 +43,28 @@ jobs:
 
       - name: Build patched kube-proxy.exe and fetch hns.psm1
         run: |
-          git clone --depth 1 --branch ${{ matrix.k8s_version }} https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
+          $ErrorActionPreference = "Stop"
+          function Assert-LastExitCode {
+            if ($LASTEXITCODE -ne 0) {
+              throw "Native command failed with exit code $LASTEXITCODE"
+            }
+          }
+
+          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.k8s_version }} https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
+          Assert-LastExitCode
           Push-Location $env:RUNNER_TEMP\kubernetes
-          git apply "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
+          git config core.autocrlf false
+          git apply --whitespace=nowarn "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
+          Assert-LastExitCode
+          if (-not (Select-String -Path .\pkg\proxy\winkernel\proxier.go -Pattern "reconciling current HNS state" -SimpleMatch -Quiet)) {
+            throw "patched proxier.go does not contain stale-HNS reconciliation marker"
+          }
           $env:GOOS = "windows"
           $env:GOARCH = "amd64"
           go test ./pkg/proxy/winkernel/...
+          Assert-LastExitCode
           go build -o "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe" .\cmd\kube-proxy
+          Assert-LastExitCode
           Pop-Location
           Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/master/Kubernetes/windows/hns.psm1
 
@@ -79,9 +94,9 @@ jobs:
       matrix:
         include:
           - k8s_version: v1.34.6
-            image_tag: v1.34.6-appmana.post.3-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.4-calico-hostprocess
           - k8s_version: v1.35.5
-            image_tag: v1.35.5-appmana.post.4-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.5-calico-hostprocess
     steps:
       - uses: docker/setup-buildx-action@v3
 
