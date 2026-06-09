@@ -1,5 +1,5 @@
 diff --git a/pkg/proxy/winkernel/hns.go b/pkg/proxy/winkernel/hns.go
-index 392cd79c..1e351368 100644
+index 392cd79cf99..1e35136893b 100644
 --- a/pkg/proxy/winkernel/hns.go
 +++ b/pkg/proxy/winkernel/hns.go
 @@ -23,6 +23,7 @@ import (
@@ -138,7 +138,7 @@ index 392cd79c..1e351368 100644
  	previousLoadBalancers[id] = lbInfo
  	return lbInfo, err
 diff --git a/pkg/proxy/winkernel/proxier.go b/pkg/proxy/winkernel/proxier.go
-index 4cb12eda..75b2b0ea 100644
+index 4cb12eda389..4bde07c19a8 100644
 --- a/pkg/proxy/winkernel/proxier.go
 +++ b/pkg/proxy/winkernel/proxier.go
 @@ -20,6 +20,7 @@ limitations under the License.
@@ -149,7 +149,15 @@ index 4cb12eda..75b2b0ea 100644
  	"fmt"
  	"net"
  	"os"
-@@ -107,11 +108,32 @@ func (info loadBalancerIngressInfo) String() string {
+@@ -60,6 +61,7 @@ type KernelCompatTester interface {
+ 
+ type HostMacProvider interface {
+ 	GetHostMac(nodeIP net.IP) string
++	GetSourceVIP(ipFamily v1.IPFamily, nodeIP net.IP) string
+ }
+ 
+ // CanUseWinKernelProxier returns true if we should use the Kernel Proxier
+@@ -107,11 +109,32 @@ func (info loadBalancerIngressInfo) String() string {
  }
  
  type loadBalancerInfo struct {
@@ -184,7 +192,7 @@ index 4cb12eda..75b2b0ea 100644
  }
  
  type loadBalancerIdentifier struct {
-@@ -169,11 +191,35 @@ func (info serviceInfo) String() string {
+@@ -169,11 +192,35 @@ func (info serviceInfo) String() string {
  	return svcInfoStr
  }
  
@@ -224,7 +232,7 @@ index 4cb12eda..75b2b0ea 100644
  }
  
  type remoteSubnetInfo struct {
-@@ -191,6 +237,8 @@ const (
+@@ -191,6 +238,8 @@ const (
  	MAX_COUNT_STALE_LOADBALANCERS = 20
  )
  
@@ -233,7 +241,7 @@ index 4cb12eda..75b2b0ea 100644
  func newHostNetworkService(hcnImpl HcnService) (HostNetworkService, hcn.SupportedFeatures) {
  	var h HostNetworkService
  	supportedFeatures := hcnImpl.GetSupportedFeatures()
-@@ -268,6 +316,20 @@ func isOverlay(hnsNetworkInfo *hnsNetworkInfo) bool {
+@@ -268,6 +317,28 @@ func isOverlay(hnsNetworkInfo *hnsNetworkInfo) bool {
  	return strings.EqualFold(hnsNetworkInfo.networkType, NETWORK_TYPE_OVERLAY)
  }
  
@@ -251,10 +259,18 @@ index 4cb12eda..75b2b0ea 100644
 +	}
 +}
 +
++func l2BridgeSourceVIP(hostMacProvider HostMacProvider, ipFamily v1.IPFamily, nodeIP net.IP) string {
++	sourceVip := hostMacProvider.GetSourceVIP(ipFamily, nodeIP)
++	if sourceVip != "" {
++		return sourceVip
++	}
++	return nodeIP.String()
++}
++
  // StackCompatTester tests whether the required kernel and network are dualstack capable
  type StackCompatTester interface {
  	DualStackCompatible(networkName string) bool
-@@ -309,6 +371,11 @@ func (t DualStackCompatTester) DualStackCompatible(networkName string) bool {
+@@ -309,6 +380,11 @@ func (t DualStackCompatTester) DualStackCompatible(networkName string) bool {
  		return false
  	}
  
@@ -266,7 +282,7 @@ index 4cb12eda..75b2b0ea 100644
  	return true
  }
  
-@@ -799,6 +866,10 @@ func newProxierInternal(
+@@ -799,6 +875,10 @@ func newProxierInternal(
  	}
  
  	klog.V(1).InfoS("Hns Network loaded", "hnsNetworkInfo", hnsNetworkInfo)
@@ -277,7 +293,7 @@ index 4cb12eda..75b2b0ea 100644
  	isDSR := config.EnableDSR
  	if isDSR && !utilfeature.DefaultFeatureGate.Enabled(kubefeatures.WinDSR) {
  		return nil, fmt.Errorf("WinDSR feature gate not enabled")
-@@ -838,6 +909,19 @@ func newProxierInternal(
+@@ -838,6 +918,19 @@ func newProxierInternal(
  		if len(hostMac) == 0 {
  			return nil, fmt.Errorf("could not find host mac address for %s", nodeIP)
  		}
@@ -292,12 +308,12 @@ index 4cb12eda..75b2b0ea 100644
 +		}
 +		sourceVip = config.SourceVip
 +		if len(sourceVip) == 0 {
-+			sourceVip = nodeIP.String()
++			sourceVip = l2BridgeSourceVIP(hostMacProvider, ipFamily, nodeIP)
 +		}
  	}
  
  	proxier := &Proxier{
-@@ -895,6 +979,10 @@ func NewDualStackProxier(
+@@ -895,6 +988,10 @@ func NewDualStackProxier(
  		nodeName, nodeIPs[v1.IPv6Protocol], recorder, healthzServer,
  		healthzBindAddress, config)
  	if err != nil {
@@ -308,7 +324,7 @@ index 4cb12eda..75b2b0ea 100644
  		return nil, fmt.Errorf("unable to create ipv6 proxier: %v, nodeName: %s, nodeIP:%v", err, nodeName, nodeIPs[v1.IPv6Protocol])
  	}
  
-@@ -1287,8 +1375,10 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+@@ -1287,8 +1384,10 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
  		}
  
  		if svcInfo.policyApplied {
@@ -321,11 +337,81 @@ index 4cb12eda..75b2b0ea 100644
  		}
  
  		if strings.EqualFold(proxier.network.networkType, NETWORK_TYPE_OVERLAY) {
+@@ -1522,7 +1621,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 				sourceVip,
+ 				svcInfo.ClusterIP().String(),
+ 				clusterIPEndpoints,
+-				loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
++				loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
+ 				Enum(svcInfo.Protocol()),
+ 				uint16(svcInfo.targetPort),
+ 				uint16(svcInfo.Port()),
+@@ -1541,7 +1640,7 @@ func (proxier *Proxier) syncProxyRules() (retryError error) {
+ 				// Cluster IP LoadBalancer creation
+ 				hnsLoadBalancer, err := hns.getLoadBalancer(
+ 					clusterIPEndpoints,
+-					loadBalancerFlags{isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
++					loadBalancerFlags{isILB: true, isDSR: proxier.isDSR, isIPv6: proxier.ipFamily == v1.IPv6Protocol, sessionAffinity: sessionAffinityClientIP},
+ 					sourceVip,
+ 					svcInfo.ClusterIP().String(),
+ 					Enum(svcInfo.Protocol()),
+@@ -1877,3 +1976,42 @@ func (r *localHostMacProvider) GetHostMac(nodeIP net.IP) string {
+ 	}
+ 	return hostMac
+ }
++
++func (r *localHostMacProvider) GetSourceVIP(ipFamily v1.IPFamily, nodeIP net.IP) string {
++	interfaces, _ := net.Interfaces()
++	for _, inter := range interfaces {
++		addresses, _ := inter.Addrs()
++		hasNodeIP := false
++		var familyIP string
++		var ula string
++		for _, addr := range addresses {
++			addrIP, _, _ := netutils.ParseCIDRSloppy(addr.String())
++			if addrIP == nil {
++				continue
++			}
++			if addrIP.Equal(nodeIP) {
++				hasNodeIP = true
++			}
++			switch ipFamily {
++			case v1.IPv4Protocol:
++				if netutils.IsIPv4(addrIP) {
++					familyIP = addrIP.String()
++				}
++			case v1.IPv6Protocol:
++				if netutils.IsIPv6(addrIP) && !addrIP.IsLinkLocalUnicast() {
++					familyIP = addrIP.String()
++					if strings.HasPrefix(strings.ToLower(addrIP.String()), "fd") {
++						ula = addrIP.String()
++					}
++				}
++			}
++		}
++		if hasNodeIP {
++			if ula != "" {
++				return ula
++			}
++			return familyIP
++		}
++	}
++	return ""
++}
 diff --git a/pkg/proxy/winkernel/proxier_test.go b/pkg/proxy/winkernel/proxier_test.go
-index 4ebce722..120eb317 100644
+index 4ebce722b93..6cb28c185f7 100644
 --- a/pkg/proxy/winkernel/proxier_test.go
 +++ b/pkg/proxy/winkernel/proxier_test.go
-@@ -95,6 +95,16 @@ func newHnsNetwork(networkInfo *hnsNetworkInfo) *hcn.HostComputeNetwork {
+@@ -48,6 +48,8 @@ import (
+ const (
+ 	testNodeName      = "test-node"
+ 	testNetwork       = "TestNetwork"
++	managementIPv4    = "10.2.0.11"
++	managementIPv6    = "fd5a:8000:1::11"
+ 	prefixLen         = 24
+ 	macAddress        = "00-11-22-33-44-55"
+ 	macAddressLocal1  = "00-11-22-33-44-56"
+@@ -95,6 +97,16 @@ func newHnsNetwork(networkInfo *hnsNetworkInfo) *hcn.HostComputeNetwork {
  		Type:     hcn.NetworkType(networkInfo.networkType),
  		Policies: policies,
  	}
@@ -342,7 +428,7 @@ index 4ebce722..120eb317 100644
  	return network
  }
  
-@@ -159,6 +169,81 @@ func getHcnMock(networkType string) *fakehcn.HcnMock {
+@@ -159,6 +171,106 @@ func getHcnMock(networkType string) *fakehcn.HcnMock {
  	return hcnMock
  }
  
@@ -396,7 +482,7 @@ index 4ebce722..120eb317 100644
 +	assert.Contains(t, err.Error(), "0x803b000c")
 +}
 +
-+func TestL2BridgeDefaultsSourceVIPToNodeIP(t *testing.T) {
++func TestL2BridgeDefaultsSourceVIPToManagementIP(t *testing.T) {
 +	nodeIP := netutils.ParseIPSloppy("10.0.0.1")
 +	config := config.KubeProxyWinkernelConfiguration{
 +		NetworkName: testNetwork,
@@ -418,18 +504,43 @@ index 4ebce722..120eb317 100644
 +
 +	assert.NoError(t, err)
 +	assert.NotNil(t, proxier)
-+	assert.Equal(t, nodeIP.String(), proxier.sourceVip)
++	assert.Equal(t, managementIPv4, proxier.sourceVip)
++}
++
++func TestIPv6L2BridgeDefaultsSourceVIPToManagementIPv6(t *testing.T) {
++	nodeIP := netutils.ParseIPSloppy("2001:5a8:4298:3b00::11")
++	config := config.KubeProxyWinkernelConfiguration{
++		NetworkName: testNetwork,
++	}
++	hcnMock := getHcnMock("L2Bridge")
++
++	proxier, err := newProxierInternal(
++		v1.IPv6Protocol,
++		testNodeName,
++		nodeIP,
++		healthcheck.NewFakeServiceHealthServer(),
++		nil,
++		0,
++		hcnMock,
++		&testHostMacProvider{macAddress: macAddress},
++		config,
++		false,
++	)
++
++	assert.NoError(t, err)
++	assert.NotNil(t, proxier)
++	assert.Equal(t, managementIPv6, proxier.sourceVip)
 +}
 +
  func TestCreateServiceVip(t *testing.T) {
  	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
  	if proxier == nil {
-@@ -1514,6 +1599,121 @@ func TestClusterIPLBInCreateDsrLoadBalancer(t *testing.T) {
+@@ -1514,6 +1626,121 @@ func TestClusterIPLBInCreateDsrLoadBalancer(t *testing.T) {
  	}
  }
  
 +func TestClusterIPLBKeepsSourceVIPOnL2BridgeNonDSR(t *testing.T) {
-+	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_L2BRIDGE, false)
++	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), "L2Bridge", false)
 +	assert.NotNil(t, proxier, "Failed to create proxier")
 +
 +	hcnMock := proxier.hcn.(*fakehcn.HcnMock)
@@ -478,12 +589,12 @@ index 4ebce722..120eb317 100644
 +	clusterIPLb, err := proxier.hcn.GetLoadBalancerByID(svcInfo.hnsID)
 +	assert.NoError(t, err)
 +	assert.Equal(t, proxier.sourceVip, clusterIPLb.SourceVIP)
-+	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsILB, "ClusterIP load balancer should not request ILB when source VIP is required")
++	assert.NotZero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsILB, "ClusterIP load balancer should remain internal so pod traffic is intercepted")
 +	assert.Zero(t, clusterIPLb.PortMappings[0].Flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP, "ClusterIP load balancer should not request LocalRoutedVIP when source VIP is required")
 +}
 +
 +func TestClusterIPLBReconcilesStaleHNSStateAfterPolicyApplied(t *testing.T) {
-+	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_L2BRIDGE, false)
++	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), "L2Bridge", false)
 +	assert.NotNil(t, proxier, "Failed to create proxier")
 +
 +	svcIP := "10.20.30.42"
@@ -546,8 +657,26 @@ index 4ebce722..120eb317 100644
  func TestEndpointSliceWithInternalPortDifferentFromServicePort(t *testing.T) {
  	proxier := NewFakeProxier(t, testNodeName, netutils.ParseIPSloppy("10.0.0.1"), NETWORK_TYPE_OVERLAY, true)
  	assert.NotNil(t, proxier, "Failed to create proxier")
+@@ -2005,6 +2232,17 @@ func (r *testHostMacProvider) GetHostMac(nodeIP net.IP) string {
+ 	return r.macAddress
+ }
+ 
++func (r *testHostMacProvider) GetSourceVIP(ipFamily v1.IPFamily, nodeIP net.IP) string {
++	switch ipFamily {
++	case v1.IPv4Protocol:
++		return managementIPv4
++	case v1.IPv6Protocol:
++		return managementIPv6
++	default:
++		return nodeIP.String()
++	}
++}
++
+ // TestRemoteAndLocalEndpointsSameIP demonstrates a reference counting issue
+ // when two services share an endpoint with the same IP address, where one
+ // service treats it as local (NodeName matches proxy hostname) and the other
 diff --git a/pkg/proxy/winkernel/testing/hcnutils_mock.go b/pkg/proxy/winkernel/testing/hcnutils_mock.go
-index 85a73884..220fadc4 100644
+index 85a73884abf..b8b1c97ba97 100644
 --- a/pkg/proxy/winkernel/testing/hcnutils_mock.go
 +++ b/pkg/proxy/winkernel/testing/hcnutils_mock.go
 @@ -22,6 +22,7 @@ package testing
@@ -567,7 +696,7 @@ index 85a73884..220fadc4 100644
 -	ShouldFailDeleteLoadBalancer bool
 +	supportedFeatures                         hcn.SupportedFeatures
 +	network                                   *hcn.HostComputeNetwork
-+	ShouldFailDeleteLoadBalancer              bool
++	ShouldFailDeleteLoadBalancer             bool
 +	DropSourceVIPForUnsupportedClusterIPFlags bool
  }
  
@@ -615,7 +744,7 @@ index 85a73884..220fadc4 100644
  	loadBalancer.Id = hcnObj.generateLoadbalancerGuid()
 +	if hcnObj.DropSourceVIPForUnsupportedClusterIPFlags && len(loadBalancer.PortMappings) > 0 {
 +		flags := loadBalancer.PortMappings[0].Flags
-+		if flags&hcn.LoadBalancerPortMappingFlagsILB != 0 || flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP != 0 {
++		if flags&hcn.LoadBalancerPortMappingFlagsLocalRoutedVIP != 0 {
 +			loadBalancer.SourceVIP = ""
 +		}
 +	}

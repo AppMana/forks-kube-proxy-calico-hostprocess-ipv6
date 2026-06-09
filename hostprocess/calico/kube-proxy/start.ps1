@@ -98,20 +98,12 @@ if ($network.Type -EQ "Overlay") {
     $extraFeatures += "WinOverlay=true"
 }
 
-# L2Bridge with DSR off also needs --source-vip. Without it kube-proxy registers
-# HCN ELB policies for ClusterIPs but HNS computes a NAT pool against an
-# unresolvable source IP and silently sets IsApplied=false. Result: pod ->
-# ClusterIP TCP times out for every service. Upstream's existing block above
-# only covers Overlay networks; mirror the same discovery for L2Bridge non-DSR.
+# L2Bridge with DSR off must not pass Calico_ep as --source-vip. The patched
+# kube-proxy binary derives the SourceVIP per proxier family from the node IP
+# when winkernel.sourceVip is empty. Passing Calico_ep here is IPv4-only and
+# causes the IPv6 proxier to submit mixed-family HCN load balancers.
 if ($network.Type -EQ "L2Bridge" -AND -NOT $PlatformSupportDSR) {
-    Write-Host "Detected L2Bridge with DSR disabled, waiting for Calico host endpoint to be created..."
-    while (-Not (Get-HnsEndpoint | ? Name -EQ "Calico_ep")) {
-        Start-Sleep 1
-    }
-    Write-Host "Host endpoint found."
-    $sourceVip = (Get-HnsEndpoint | ? Name -EQ "Calico_ep").IpAddress
-    $argList += "--source-vip=$sourceVip"
-    Write-Host "Using --source-vip=$sourceVip"
+    Write-Host "Detected L2Bridge with DSR disabled; leaving --source-vip unset for kube-proxy."
 }
 
 if ($extraFeatures.Length -GT 0) {
