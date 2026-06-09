@@ -1,13 +1,17 @@
 # AppMana kube-proxy HostProcess images
 
-This fork builds patched Windows kube-proxy HostProcess images for AppMana's
-Calico Windows/Linux k0s clusters.
+This repository builds patched Windows kube-proxy HostProcess images for
+AppMana's Calico Windows/Linux k0s clusters. The public tags are multi-platform
+manifests with upstream Linux kube-proxy and AppMana-patched Windows kube-proxy.
 
-Published multi-platform manifests:
+Published manifests:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.6-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.7-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.12-calico-hostprocess
+  sha256:4257c386e577c855443480583fb2564e5f0e2319c436f4ae126146b6012fd033
+
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.8-calico-hostprocess
+  sha256:ae693837fc36f98f313aab545fca9799756e94228263d5f586c162e4ee69ffaf
 ```
 
 Version matrix:
@@ -17,20 +21,26 @@ Kubernetes 1.34.x -> kube-proxy v1.34.6 -> Calico v3.29.6
 Kubernetes 1.35.x -> kube-proxy v1.35.5 -> Calico v3.31.4
 ```
 
-Each tag is a manifest list:
+Each tag contains:
 
 - `linux/amd64`: upstream `registry.k8s.io/kube-proxy:<version>`.
 - `windows/amd64/ltsc2022`: AppMana patched HostProcess image.
 
+## Do not use older post tags
+
 Do not use `v1.34.6-appmana.post.3-calico-hostprocess` or
 `v1.35.5-appmana.post.4-calico-hostprocess`. Those tags were published by a
-workflow that allowed `git apply` to fail on the Windows runner, so their
-Windows binaries did not include the stale-ELB reconciliation fix.
+workflow that allowed `git apply` to fail on the Windows runner, so the Windows
+binaries did not include the stale-ELB reconciliation fix.
 
 Do not use `v1.34.6-appmana.post.5-calico-hostprocess` or
 `v1.35.5-appmana.post.6-calico-hostprocess` for L2Bridge clusters. Those tags
 still leave `winkernel.sourceVip` empty when kube-proxy is not running overlay
 mode, so fresh IPv4 ClusterIP load balancers are created without SourceVIP.
+
+Do not use post.10/post.11-style images for Windows ClusterIP validation. They
+fixed part of SourceVIP selection but left ClusterIP HNS load balancers as
+non-ILB, which still breaks pod-to-service traffic.
 
 ## What is patched
 
@@ -49,61 +59,59 @@ the HostProcess image.
 The Windows fixes cover:
 
 - Stable HCN load balancer identity that includes IP family.
-- L2Bridge `--source-vip` handling when DSR is disabled.
+- L2Bridge SourceVIP selection when DSR is disabled.
+- IPv6 SourceVIP selection from the Windows node management ULA.
 - IPv4-only fallback when the HNS network does not support IPv6.
-- Mock coverage for unsupported HNS endpoint IP families.
+- ClusterIP HNS load balancers with `ILB: true` and `LocalRoutedVIP: false`.
+- Reconciliation for stale HNS ClusterIP state when kube-proxy's cached
+  `policyApplied` state no longer matches HNS.
+- Mock coverage for unsupported HNS endpoint IP families and stale HNS policy
+  state.
 
 The HostProcess start script also avoids deleting all HNS policy lists. It only
 removes ELB policies, leaving Calico route and OutBoundNAT policies intact for
 existing pods.
 
-## Fixed issue: stale ClusterIP ELB state
+For L2Bridge with DSR disabled, `hostprocess/calico/kube-proxy/start.ps1`
+leaves `--source-vip` unset. The patched kube-proxy then derives SourceVIP per
+IP family from the Windows node management addresses. Do not pass `Calico_ep`;
+that endpoint is IPv4-only and breaks mixed IPv4/IPv6 selection.
+
+## Fixed issue: Windows pod-to-ClusterIP failure
 
 The live AppMana failure seen during the Unity Windows pod outage was not a
-generic Calico/BGP failure. Windows pods could reach CoreDNS pod endpoint IPs
-directly, but DNS through the kube-dns ClusterIP timed out.
+generic Calico/BGP failure and was not fixed by DNS policy changes. Windows pods
+could reach CoreDNS pod endpoint IPs directly, but DNS through the kube-dns
+ClusterIP timed out.
 
-The failing shape on Windows was:
+The failing shape was:
 
 ```text
 pod -> CoreDNS endpoint IP:53       works
 pod -> kube-dns ClusterIP:53        times out
-HNS ELB PolicyList for ClusterIP    IsApplied=false
-kube-proxy log                     "Policy already applied"
+pod -> ingress ClusterIP:443        times out
+Unity log                           "Peer could not reach https://signaling-h2.appmana.com:443"
+HNS ELB PolicyList for ClusterIP    ILB=false or stale/applied state mismatch
 ```
 
-That points at Windows kube-proxy's ClusterIP/HNS ELB reconciliation. The
-patched image correctly starts with `--enable-dsr=false`, derives SourceVIP
-from the Windows node IP for L2Bridge when the kube-proxy config does not set
-`winkernel.sourceVip`, and keeps ClusterIP policies present in HNS. The bad
-state is that HNS has the ELB PolicyList object but did not apply it to VFP, or
-that the ELB load balancer was created with an empty `SourceVIP`. In that state
-`Get-HnsPolicyList` can show `IsApplied: false`, while kube-proxy logs continue
-to print `Policy already applied`.
+`signaling-h2.appmana.com` resolves inside the cluster to the ingress ClusterIP
+`10.152.184.99`, so Unity pod registration requires the Windows ClusterIP path.
+When that path fails, the signaling server eventually reports no usable hosts
+because Windows pods never registered.
 
-The important kube-proxy code path is:
+The correct HNS policy shape for a ClusterIP is:
 
 ```text
-syncProxyRules()
-  queries HNS endpoints and load balancers
-  skips a service immediately when svcInfo.policyApplied is true
-  only later calls hns.getLoadBalancer()/hns.updateLoadBalancer()
+Type: ELB
+VIP: 10.152.184.10
+ExternalPort/InternalPort: 53
+ILB: true
+IsDSR: false
+LocalRoutedVIP: false
+SourceVIP: 10.2.0.3
 ```
 
-So kube-proxy can keep an in-memory `policyApplied=true` and skip a service
-before comparing the current HNS load balancer state. Our previous test only
-proved that ClusterIP load balancers do not request the unsupported
-`ILB`/`LocalRoutedVIP` flag combination when SourceVIP is required. That does
-not reproduce this outage on exact Kubernetes v1.34/v1.35 tags, because those
-upstream call sites already omit those flags.
-
-The post.6/post.7 images add regression tests that model both live failure
-shapes: L2Bridge with empty configured SourceVIP, and an HNS ClusterIP load
-balancer that exists but lost the desired SourceVIP/applied state while
-kube-proxy still has `svcInfo.policyApplied=true`. The fix keeps the normal
-`policyApplied` fast path when HNS still has the expected load balancer state,
-but re-enters reconciliation when the cached HNS ClusterIP load balancer is
-missing or has a stale SourceVIP.
+For IPv6 ClusterIPs, `SourceVIP` must be the node's management IPv6 ULA.
 
 Operationally, diagnose this before restarting random Calico components:
 
@@ -114,10 +122,21 @@ Get-HnsPolicyList |
   Select-Object ID, IsApplied, @{n="Policies";e={$_.Policies | ConvertTo-Json -Compress}}
 ```
 
-If direct CoreDNS endpoint connectivity works but the ClusterIP policy has
-`IsApplied=false` or the load balancer has empty `SourceVIP`, roll the Windows
-kube-proxy image to the matching post.6 or post.7 tag and re-check the HNS
-policy state.
+From a Windows pod:
+
+```powershell
+Resolve-DnsName signaling-h2.appmana.com -DnsOnly
+Test-NetConnection 10.152.184.10 -Port 53 -InformationLevel Quiet
+Test-NetConnection signaling-h2.appmana.com -Port 443 -InformationLevel Quiet
+```
+
+Expected AppMana production values:
+
+```text
+signaling-h2.appmana.com -> 10.152.184.99
+10.152.184.10:53       -> True
+signaling-h2:443       -> True
+```
 
 ## Windows DaemonSet
 
@@ -150,7 +169,7 @@ spec:
           runAsUserName: "NT AUTHORITY\\system"
       containers:
       - name: kube-proxy
-        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.7-calico-hostprocess
+        image: ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.8-calico-hostprocess
         args:
         - "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/start.ps1"
         workingDir: "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/"
@@ -174,9 +193,16 @@ spec:
           name: kube-proxy
 ```
 
-Use `v1.34.6-appmana.post.6-calico-hostprocess` for Kubernetes/k0s 1.34 and
-Calico 3.29. Use `v1.35.5-appmana.post.7-calico-hostprocess` for
+Use `v1.34.6-appmana.post.12-calico-hostprocess` for Kubernetes/k0s 1.34 and
+Calico 3.29. Use `v1.35.5-appmana.post.8-calico-hostprocess` for
 Kubernetes/k0s 1.35 and Calico 3.31.
+
+Production 1.34 currently uses the Harbor Windows-only image by digest through
+GitOps:
+
+```text
+harbor.appmana.com/appmana-shared/kube-proxy:v1.34.6-appmana.post.12-calico-hostprocess-windows-ltsc2022@sha256:ca3d82d26c5b0bc4c4101502eef85aa3caf986ce78380e73dab16df8cf9a1030
+```
 
 ## BGP and DSR requirements
 
@@ -195,19 +221,11 @@ enabled, a Windows pod connecting to a Linux-backed ClusterIP can receive the
 reply directly from the Linux pod IP instead of the ClusterIP, and Windows drops
 the TCP stream.
 
-The current `start.ps1` waits for the `Calico` HNS L2Bridge network and, when
-DSR is disabled, `Calico_ep`. kube-proxy itself now derives the L2Bridge
-SourceVIP from the Windows node IP when the config leaves `winkernel.sourceVip`
-empty.
-That ordering is not sufficient for a fresh kind/QEMU Windows node where
-Calico HostProcess startup reaches the Kubernetes API through the in-cluster
-service IP: kube-proxy waits for Calico HNS, while Calico waits for the service
-IP path that kube-proxy would program. Treat `kube-proxy-windows` being
-Kubernetes-Ready while it is still printing `Waiting for HNS network Calico to
-be created...` as a bootstrap failure, not a validated datapath.
-
 The Calico runbook preflights this by requiring `C:\CalicoWindows\nodename`,
-HNS `Calico`, and HNS `Calico_ep` before running the health matrix.
+HNS `Calico`, and HNS `Calico_ep` before running the health matrix. Treat
+`kube-proxy-windows` being Kubernetes-Ready while it is still printing
+`Waiting for HNS network Calico to be created...` as a bootstrap failure, not a
+validated datapath.
 
 ## Build and publish
 
@@ -215,10 +233,10 @@ GitHub Actions builds on every push to `master` when the kube-proxy workflow,
 patches, or HostProcess files change. It publishes:
 
 ```text
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.6-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.6-calico-hostprocess
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.7-calico-hostprocess-windows-ltsc2022
-ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.7-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.12-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.12-calico-hostprocess
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.8-calico-hostprocess-windows-ltsc2022
+ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.8-calico-hostprocess
 ```
 
 The tags without the `-windows-ltsc2022` suffix are the multi-platform
