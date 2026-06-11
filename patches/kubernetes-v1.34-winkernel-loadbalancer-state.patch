@@ -355,13 +355,14 @@ index 46ed064b62f..4f4518accd8 100644
  					sourceVip,
  					svcInfo.ClusterIP().String(),
  					Enum(svcInfo.Protocol()),
-@@ -1867,3 +1966,42 @@ func (r *localHostMacProvider) GetHostMac(nodeIP net.IP) string {
+@@ -1867,3 +1966,66 @@ func (r *localHostMacProvider) GetHostMac(nodeIP net.IP) string {
  	}
  	return hostMac
  }
 +
 +func (r *localHostMacProvider) GetSourceVIP(ipFamily v1.IPFamily, nodeIP net.IP) string {
 +	interfaces, _ := net.Interfaces()
++	var nodeIfFamilyIP, nodeIfULA, anyULA, anyFamilyIP string
 +	for _, inter := range interfaces {
 +		addresses, _ := inter.Addrs()
 +		hasNodeIP := false
@@ -382,21 +383,44 @@ index 46ed064b62f..4f4518accd8 100644
 +				}
 +			case v1.IPv6Protocol:
 +				if netutils.IsIPv6(addrIP) && !addrIP.IsLinkLocalUnicast() {
++					lower := strings.ToLower(addrIP.String())
++					// Never use deprecated site-local (fec0::/10): it shows up
++					// on secondary/OOB adapters and is an unroutable SNAT
++					// source that silently breaks every IPv6 ClusterIP.
++					if strings.HasPrefix(lower, "fec") || strings.HasPrefix(lower, "fed") || strings.HasPrefix(lower, "fee") || strings.HasPrefix(lower, "fef") {
++						continue
++					}
 +					familyIP = addrIP.String()
-+					if strings.HasPrefix(strings.ToLower(addrIP.String()), "fd") {
++					if strings.HasPrefix(lower, "fd") {
 +						ula = addrIP.String()
 +					}
 +				}
 +			}
 +		}
++		if ula != "" && anyULA == "" {
++			anyULA = ula
++		}
++		if familyIP != "" && anyFamilyIP == "" {
++			anyFamilyIP = familyIP
++		}
 +		if hasNodeIP {
-+			if ula != "" {
-+				return ula
-+			}
-+			return familyIP
++			nodeIfFamilyIP = familyIP
++			nodeIfULA = ula
 +		}
 +	}
-+	return ""
++	// Prefer the management ULA on the adapter carrying the node IP; fall
++	// back to any ULA before any other global so a multi-NIC host cannot
++	// pick a transient or wrong-adapter address.
++	if nodeIfULA != "" {
++		return nodeIfULA
++	}
++	if nodeIfFamilyIP != "" {
++		return nodeIfFamilyIP
++	}
++	if anyULA != "" {
++		return anyULA
++	}
++	return anyFamilyIP
 +}
 diff --git a/pkg/proxy/winkernel/proxier_test.go b/pkg/proxy/winkernel/proxier_test.go
 index d6492a92970..33590328ed9 100644
