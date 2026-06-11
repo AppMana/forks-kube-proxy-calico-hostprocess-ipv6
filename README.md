@@ -113,13 +113,12 @@ SourceVIP: 10.2.0.3
 
 For IPv6 ClusterIPs, `SourceVIP` must be the node's management IPv6 ULA.
 
-Operationally, diagnose this before restarting random Calico components:
+Operationally, diagnose this with a functional check, not `IsApplied`:
 
 ```powershell
-$dnsVip = "10.152.184.10"
-Get-HnsPolicyList |
-  Where-Object { $_.Policies | Where-Object { $_.Type -eq "ELB" -and $_.VIP -eq $dnsVip } } |
-  Select-Object ID, IsApplied, @{n="Policies";e={$_.Policies | ConvertTo-Json -Compress}}
+# Stale-ELB state = direct endpoint works, ClusterIP does not.
+Test-NetConnection <endpoint-pod-or-node-ip> -Port <port>   # expect True
+Test-NetConnection <service-cluster-ip> -Port <port>        # broken when False
 ```
 
 From a Windows pod:
@@ -136,6 +135,46 @@ Expected AppMana production values:
 signaling-h2.appmana.com -> 10.152.184.99
 10.152.184.10:53       -> True
 signaling-h2:443       -> True
+```
+
+WARNING: `Get-HnsPolicyList` reports `IsApplied=false` for every PolicyList on
+HEALTHY Windows Server 2022 nodes (verified 2026-06-10 on three working
+production nodes: 236/236 policies `IsApplied=false` while all ClusterIPs
+worked). It is not a usable health signal through the PowerShell module; do
+not base remediation on it.
+
+Known residual gap (June 9, 2026 incident): after a node reboot, host and pod
+traffic to ClusterIPs timed out for ~1h while direct endpoint IPs worked, on a
+kube-proxy already carrying the reconciliation patch. Live HCN state
+(sourceVip, flags) matched the desired state, so reconciliation never
+re-fired; VFP had silently dropped enforcement. The state cleared when the
+kube-proxy pods restarted, because `start.ps1` wipes and rebuilds all ELB
+PolicyLists at startup. Until the VFP-level divergence is detectable from the
+HCN API, the mitigation is the liveness probe below, which converts that
+hour-long outage into an automatic container restart after a few minutes.
+
+### Stale-ELB liveness probe
+
+`health-check.ps1` (shipped in the image) fails ONLY when the apiserver is
+reachable at its direct endpoint but not at its ClusterIP — the stale-ELB
+signature. Apiserver-down and node-offline conditions exit healthy so
+kube-proxy is not restart-looped for failures it cannot fix.
+
+```yaml
+        env:
+        - name: KUBEPROXY_HEALTH_CLUSTERIP
+          value: "10.152.184.1"     # apiserver ClusterIP for this cluster
+        livenessProbe:
+          exec:
+            command:
+            - powershell.exe
+            - -NoProfile
+            - -File
+            - "$env:CONTAINER_SANDBOX_MOUNT_POINT/kube-proxy/health-check.ps1"
+          initialDelaySeconds: 120
+          periodSeconds: 30
+          failureThreshold: 5
+          timeoutSeconds: 15
 ```
 
 ## Windows DaemonSet
