@@ -12,7 +12,10 @@
 # kube-proxy is not restart-looped for failures it cannot fix.
 #
 # Environment:
-#   KUBEPROXY_HEALTH_CLUSTERIP       apiserver ClusterIP (e.g. 10.152.184.1); probe is a no-op when unset
+#   KUBEPROXY_HEALTH_CLUSTERIP       apiserver ClusterIP (e.g. 10.152.184.1);
+#                                    defaults to KUBERNETES_SERVICE_HOST (which
+#                                    the kubelet injects into every container);
+#                                    probe is a no-op when neither is set
 #   KUBEPROXY_HEALTH_CLUSTERIP_PORT  default 443
 #   KUBEPROXY_HEALTH_DIRECT          direct apiserver host:port; defaults to the
 #                                    server in the mounted kube-proxy kubeconfig
@@ -20,7 +23,10 @@ $ErrorActionPreference = 'SilentlyContinue'
 
 $vip = $env:KUBEPROXY_HEALTH_CLUSTERIP
 if ([string]::IsNullOrWhiteSpace($vip)) {
-    Write-Output 'health-check: KUBEPROXY_HEALTH_CLUSTERIP not set; skipping'
+    $vip = $env:KUBERNETES_SERVICE_HOST
+}
+if ([string]::IsNullOrWhiteSpace($vip)) {
+    Write-Output 'health-check: no KUBEPROXY_HEALTH_CLUSTERIP or KUBERNETES_SERVICE_HOST; skipping'
     exit 0
 }
 $vipPort = 443

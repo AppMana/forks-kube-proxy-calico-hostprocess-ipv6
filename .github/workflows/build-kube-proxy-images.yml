@@ -20,14 +20,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # post.15/post.11: DSR disabled by default (opt in with
+          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
+          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
+          # DaemonSet livenessProbe — required because k0s 1.36 renders its own
+          # env-less kube-proxy-windows DaemonSet (override the image via k0s
+          # spec.images.windows.kubeproxy).
           - k8s_version: v1.34.6
             go_version: 1.24.x
             patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.14-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.15-calico-hostprocess
           - k8s_version: v1.35.5
             go_version: 1.25.x
             patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.10-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.11-calico-hostprocess
+          - k8s_version: v1.36.2
+            go_version: 1.25.x
+            patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
+            image_tag: v1.36.2-appmana.post.11-calico-hostprocess
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy

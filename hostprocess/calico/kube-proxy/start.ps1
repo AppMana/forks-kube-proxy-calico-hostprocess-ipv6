@@ -42,13 +42,20 @@ if ($kubeProxyVer -match "v([0-9])\.([0-9]+)") {
     $kubeProxyGE114 = ($major -GT 1 -OR $major -EQ 1 -AND $minor -GE 14)
 }
 
-# Determine the windows version and build number for DSR support.
-# requires 2019 with KB4580390 (Oct 2020)
-$PlatformSupportDSR = $true
-
 # Mixed Windows/Linux clusters need DSR off because Windows DSR breaks
 # cross-node ClusterIP routing when the backend resolves to a Linux pod.
-# Set KUBEPROXY_DISABLE_DSR=true on the DaemonSet to opt out.
+# DSR is DISABLED BY DEFAULT since post.11: the DaemonSet may be rendered by
+# an orchestrator that sets no env at all (k0s 1.36 renders its own
+# kube-proxy-windows DaemonSet with only NODENAME/POD_IP), so the safe
+# behavior must not depend on env vars being present. Set
+# KUBEPROXY_ENABLE_DSR=true to opt in (requires 2019 with KB4580390,
+# Oct 2020). KUBEPROXY_DISABLE_DSR=true is still honored for backward
+# compatibility and wins over the enable flag.
+$PlatformSupportDSR = $false
+if ($env:KUBEPROXY_ENABLE_DSR -EQ "true") {
+    $PlatformSupportDSR = $true
+    Write-Host "DSR enabled via KUBEPROXY_ENABLE_DSR=true env var."
+}
 if ($env:KUBEPROXY_DISABLE_DSR -EQ "true") {
     $PlatformSupportDSR = $false
     Write-Host "DSR disabled via KUBEPROXY_DISABLE_DSR=true env var."
@@ -130,4 +137,34 @@ Write-Host "Start to run $kproxy $argList"
 # We'll also pick up a network name env var from the Calico config file.  Override it
 # since the value in the config file may be a regex.
 $env:KUBE_NETWORK=$NetworkName
-Invoke-Expression "$kproxy $argList"
+
+# Since post.11 kube-proxy runs as a child process with an in-script stale-ELB
+# watchdog instead of a DaemonSet livenessProbe: the DaemonSet may be rendered
+# by an orchestrator (k0s 1.36) whose template carries no probe, so the
+# restart-on-stale-ELB behavior has to live inside the container. The watchdog
+# reuses health-check.ps1 (which defaults its probe VIP to
+# KUBERNETES_SERVICE_HOST); five consecutive failures kill kube-proxy and exit
+# nonzero so the kubelet restarts the container and start.ps1 wipes the stale
+# ELB policies on the way back up.
+$proc = Start-Process -FilePath $kproxy -ArgumentList $argList -NoNewWindow -PassThru
+$healthScript = Join-Path $PSScriptRoot 'health-check.ps1'
+$consecutiveFailures = 0
+while ($true) {
+    Start-Sleep -Seconds 60
+    if ($proc.HasExited) {
+        Write-Host "kube-proxy exited with code $($proc.ExitCode)."
+        exit 1
+    }
+    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $healthScript | Out-Null
+    if ($LASTEXITCODE -NE 0) {
+        $consecutiveFailures++
+        Write-Host "health check failed ($consecutiveFailures consecutive)."
+    } else {
+        $consecutiveFailures = 0
+    }
+    if ($consecutiveFailures -GE 5) {
+        Write-Host "health check failed 5 consecutive times; restarting kube-proxy."
+        Stop-Process -Id $proc.Id -Force
+        exit 1
+    }
+}
