@@ -24,10 +24,27 @@ ipmo -Force .\hns.psm1
 
 Write-Host "Running kub-proxy service."
 
-# Now, wait for the Calico network to be created.
+# Now, wait for the Calico network to be created. Each query runs in a
+# disposable child process with a hard timeout: a Get-HnsNetwork call issued
+# while the HNS service is restarting (node reboot, kubelet swap) can block
+# forever inside the RPC, which permanently froze this loop on all three
+# Windows nodes on 2026-07-07 — the in-process 1s retry never got a chance
+# to retry because the first call never returned.
 Write-Host "Waiting for HNS network $NetworkName to be created..."
-while (-Not (Get-HnsNetwork | ? Name -EQ $NetworkName)) {
-    Write-Debug "Still waiting for HNS network..."
+while ($true) {
+    $query = Start-Job -ScriptBlock {
+        param($moduleDir, $name)
+        Import-Module (Join-Path $moduleDir 'hns.psm1') -Force
+        [bool](Get-HnsNetwork | Where-Object Name -EQ $name)
+    } -ArgumentList $PSScriptRoot, $NetworkName
+    if (Wait-Job $query -Timeout 15) {
+        $found = Receive-Job $query
+        Remove-Job $query -Force
+        if ($found) { break }
+    } else {
+        Write-Host "HNS query timed out after 15s (HNS restarting?); retrying with a fresh process."
+        Stop-Job $query; Remove-Job $query -Force
+    }
     Start-Sleep 1
 }
 Write-Host "HNS network $NetworkName found."

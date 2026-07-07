@@ -29,15 +29,15 @@ jobs:
           - k8s_version: v1.34.6
             go_version: 1.24.x
             patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.15-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.16-calico-hostprocess
           - k8s_version: v1.35.5
             go_version: 1.25.x
             patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.11-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.12-calico-hostprocess
           - k8s_version: v1.36.2
             go_version: 1.25.x
             patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
-            image_tag: v1.36.2-appmana.post.11-calico-hostprocess
+            image_tag: v1.36.2-appmana.post.12-calico-hostprocess
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy
@@ -80,7 +80,7 @@ jobs:
           go build -o "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe" .\cmd\kube-proxy
           Assert-LastExitCode
           Pop-Location
-          Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/master/Kubernetes/windows/hns.psm1
+          Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/710cad6fc9025c86e04ef5daa6eb53f577802448/Kubernetes/windows/hns.psm1
 
       - name: Docker login ghcr
         if: github.event_name == 'push'
@@ -111,11 +111,11 @@ jobs:
         # -windows-ltsc2022 arch tags the build jobs push.
         include:
           - k8s_version: v1.34.6
-            image_tag: v1.34.6-appmana.post.15-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.16-calico-hostprocess
           - k8s_version: v1.35.5
-            image_tag: v1.35.5-appmana.post.11-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.12-calico-hostprocess
           - k8s_version: v1.36.2
-            image_tag: v1.36.2-appmana.post.11-calico-hostprocess
+            image_tag: v1.36.2-appmana.post.12-calico-hostprocess
     steps:
       - uses: docker/setup-buildx-action@v3
 
