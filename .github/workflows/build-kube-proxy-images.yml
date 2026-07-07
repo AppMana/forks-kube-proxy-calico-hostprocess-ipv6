@@ -106,11 +106,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # Keep in sync with the build-windows matrix image_tag values above —
+        # this job assembles the plain multi-platform manifest tags from the
+        # -windows-ltsc2022 arch tags the build jobs push.
         include:
           - k8s_version: v1.34.6
-            image_tag: v1.34.6-appmana.post.14-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.15-calico-hostprocess
           - k8s_version: v1.35.5
-            image_tag: v1.35.5-appmana.post.10-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.11-calico-hostprocess
+          - k8s_version: v1.36.2
+            image_tag: v1.36.2-appmana.post.11-calico-hostprocess
     steps:
       - uses: docker/setup-buildx-action@v3
 
