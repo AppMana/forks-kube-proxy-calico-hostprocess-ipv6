@@ -5,6 +5,7 @@ ADD start.ps1 /kube-proxy/start.ps1
 ADD health-check.ps1 /kube-proxy/health-check.ps1
 ADD kube-proxy.exe /kube-proxy/kube-proxy.exe
 ADD hns.psm1 /kube-proxy/hns.psm1
+ADD wait-hns.psm1 /kube-proxy/wait-hns.psm1
 
 # HostProcess containers run on the host, not in the image.
 # Use the host's powershell.exe (not the image's pwsh.exe) as entrypoint.

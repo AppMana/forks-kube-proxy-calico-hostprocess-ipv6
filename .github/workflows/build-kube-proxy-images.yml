@@ -14,7 +14,16 @@ env:
   IMAGE_NAME: kube-proxy
 
 jobs:
+  script-tests:
+    # Mocked behavior tests for the shipped PowerShell (hack/appmana/tests/):
+    # a regression here fails the build instead of the fleet.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
+
   build-windows:
+    needs: [script-tests]
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -29,15 +38,15 @@ jobs:
           - k8s_version: v1.34.6
             go_version: 1.24.x
             patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.16-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
           - k8s_version: v1.35.5
             go_version: 1.25.x
             patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.12-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
           - k8s_version: v1.36.2
             go_version: 1.25.x
             patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
-            image_tag: v1.36.2-appmana.post.12-calico-hostprocess
+            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy
@@ -111,11 +120,11 @@ jobs:
         # -windows-ltsc2022 arch tags the build jobs push.
         include:
           - k8s_version: v1.34.6
-            image_tag: v1.34.6-appmana.post.16-calico-hostprocess
+            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
           - k8s_version: v1.35.5
-            image_tag: v1.35.5-appmana.post.12-calico-hostprocess
+            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
           - k8s_version: v1.36.2
-            image_tag: v1.36.2-appmana.post.12-calico-hostprocess
+            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
     steps:
       - uses: docker/setup-buildx-action@v3
 
