@@ -85,7 +85,7 @@ jobs:
           $ErrorActionPreference = "Stop"
           Set-Location source
           if ((git rev-parse HEAD) -ne "${{ matrix.source_sha }}") { throw "source pin mismatch" }
-          go test -coverprofile=winkernel.cover ./pkg/proxy/winkernel/...
+          go test "-coverprofile=winkernel.cover" ./pkg/proxy/winkernel/...
           if ($LASTEXITCODE -ne 0) { throw "native tests failed" }
       - uses: actions/upload-artifact@v4
         if: always()
