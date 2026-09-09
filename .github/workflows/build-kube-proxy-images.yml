@@ -2,7 +2,7 @@ name: Build Kube-Proxy images
 
 on:
   push:
-    branches: [master]
+    branches: [master, "cloud-provisioning/**"]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +14,21 @@ env:
   IMAGE_NAME: kube-proxy
 
 jobs:
+  metadata:
+    runs-on: ubuntu-latest
+    outputs:
+      suffix: ${{ steps.tag.outputs.suffix }}
+    steps:
+      - id: tag
+        shell: bash
+        run: |
+          suffix=""
+          if [[ "$GITHUB_REF_NAME" != "master" ]]; then
+            branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g' | cut -c1-40)"
+            suffix="-${branch}-${GITHUB_SHA:0:12}"
+          fi
+          echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
+
   script-tests:
     # Mocked behavior tests for the shipped PowerShell (hack/appmana/tests/):
     # a regression here fails the build instead of the fleet.
@@ -22,8 +37,59 @@ jobs:
       - uses: actions/checkout@v4
       - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
 
-  build-windows:
+  test-windows-2025:
     needs: [script-tests]
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # post.15/post.11: DSR disabled by default (opt in with
+          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
+          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
+          # DaemonSet livenessProbe — required because k0s 1.36 renders its own
+          # env-less kube-proxy-windows DaemonSet (override the image via k0s
+          # spec.images.windows.kubeproxy).
+          - k8s_version: v1.34.6
+            source_branch: cloud-provisioning/hns-reconcile-v1.34.6
+            source_sha: fbb36641b584f07432649964054986cde373db5f
+            go_version: 1.24.x
+            patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
+            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
+          - k8s_version: v1.35.5
+            source_branch: cloud-provisioning/hns-reconcile-v1.35.5
+            source_sha: 9b00f285777b78a8684700b822b5072f5c5de0a2
+            go_version: 1.25.x
+            patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
+            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
+          - k8s_version: v1.36.2
+            source_branch: cloud-provisioning/hns-reconcile-v1.36.2
+            source_sha: 6d89988d2cc2ddcdd78138fe827b68232c5df8ab
+            go_version: 1.26.x
+            patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
+            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go_version }}
+      - name: Test pinned fork source on Windows Server 2025
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.source_branch }} https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6.git source
+          if ($LASTEXITCODE -ne 0) { throw "clone failed" }
+          Set-Location source
+          if ((git rev-parse HEAD) -ne "${{ matrix.source_sha }}") { throw "source pin mismatch" }
+          go test -coverprofile=winkernel.cover ./pkg/proxy/winkernel/...
+          if ($LASTEXITCODE -ne 0) { throw "native tests failed" }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: winkernel-${{ matrix.k8s_version }}-windows-2025
+          path: source/winkernel.cover
+
+  build-windows:
+    needs: [script-tests, metadata]
     runs-on: windows-2022
     strategy:
       fail-fast: false
@@ -36,15 +102,21 @@ jobs:
           # env-less kube-proxy-windows DaemonSet (override the image via k0s
           # spec.images.windows.kubeproxy).
           - k8s_version: v1.34.6
+            source_branch: cloud-provisioning/hns-reconcile-v1.34.6
+            source_sha: fbb36641b584f07432649964054986cde373db5f
             go_version: 1.24.x
             patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
             image_tag: v1.34.6-appmana.post.17-calico-hostprocess
           - k8s_version: v1.35.5
+            source_branch: cloud-provisioning/hns-reconcile-v1.35.5
+            source_sha: 9b00f285777b78a8684700b822b5072f5c5de0a2
             go_version: 1.25.x
             patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
             image_tag: v1.35.5-appmana.post.13-calico-hostprocess
           - k8s_version: v1.36.2
-            go_version: 1.25.x
+            source_branch: cloud-provisioning/hns-reconcile-v1.36.2
+            source_sha: 6d89988d2cc2ddcdd78138fe827b68232c5df8ab
+            go_version: 1.26.x
             patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
             image_tag: v1.36.2-appmana.post.13-calico-hostprocess
     defaults:
@@ -69,16 +141,13 @@ jobs:
             }
           }
 
-          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.k8s_version }} https://github.com/kubernetes/kubernetes.git $env:RUNNER_TEMP\kubernetes
+          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.source_branch }} https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6.git $env:RUNNER_TEMP\kubernetes
           Assert-LastExitCode
           Push-Location $env:RUNNER_TEMP\kubernetes
           git config core.autocrlf false
-          $patchPath = "$env:GITHUB_WORKSPACE\patches\${{ matrix.patch_file }}"
-          $normalizedPatchPath = "$env:RUNNER_TEMP\${{ matrix.patch_file }}"
-          $patchText = [System.IO.File]::ReadAllText($patchPath).Replace("`r`n", "`n")
-          [System.IO.File]::WriteAllText($normalizedPatchPath, $patchText, [System.Text.UTF8Encoding]::new($false))
-          git apply --whitespace=nowarn $normalizedPatchPath
-          Assert-LastExitCode
+          if ((git rev-parse HEAD) -ne "${{ matrix.source_sha }}") {
+            throw "Kubernetes source branch differs from pinned commit"
+          }
           if (-not (Select-String -Path .\pkg\proxy\winkernel\proxier.go -Pattern "reconciling current HNS state" -SimpleMatch -Quiet)) {
             throw "patched proxier.go does not contain stale-HNS reconciliation marker"
           }
@@ -97,7 +166,7 @@ jobs:
 
       - name: Build Windows image
         run: |
-          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}-windows-ltsc2022"
+          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}${{ needs.metadata.outputs.suffix }}-windows-ltsc2022"
           docker build `
             --build-arg WINDOWS_VERSION=ltsc2022 `
             -t $windowsImage .
@@ -105,13 +174,13 @@ jobs:
       - name: Push Windows image
         if: github.event_name == 'push'
         run: |
-          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}-windows-ltsc2022"
+          $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}${{ needs.metadata.outputs.suffix }}-windows-ltsc2022"
           docker push $windowsImage
 
   publish-manifest:
     runs-on: ubuntu-latest
     if: github.event_name == 'push'
-    needs: [build-windows]
+    needs: [build-windows, test-windows-2025, metadata]
     strategy:
       fail-fast: false
       matrix:
@@ -134,7 +203,7 @@ jobs:
       - name: Publish multi-platform manifest
         run: |
           set -euo pipefail
-          manifest_image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}"
+          manifest_image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}${{ needs.metadata.outputs.suffix }}"
           windows_image="${manifest_image}-windows-ltsc2022"
           upstream_image="registry.k8s.io/kube-proxy:${{ matrix.k8s_version }}"
           linux_digest="$(
