@@ -72,12 +72,17 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go_version }}
+      - uses: actions/checkout@v4
+        with:
+          repository: AppMana/forks-kubernetes-kube-proxy-windows-ipv6
+          ref: ${{ matrix.source_sha }}
+          ssh-key: ${{ secrets.KUBERNETES_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: source
       - name: Test pinned fork source on Windows Server 2025
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.source_branch }} https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6.git source
-          if ($LASTEXITCODE -ne 0) { throw "clone failed" }
           Set-Location source
           if ((git rev-parse HEAD) -ne "${{ matrix.source_sha }}") { throw "source pin mismatch" }
           go test -coverprofile=winkernel.cover ./pkg/proxy/winkernel/...
@@ -132,6 +137,14 @@ jobs:
         with:
           go-version: ${{ matrix.go_version }}
 
+      - uses: actions/checkout@v4
+        with:
+          repository: AppMana/forks-kubernetes-kube-proxy-windows-ipv6
+          ref: ${{ matrix.source_sha }}
+          ssh-key: ${{ secrets.KUBERNETES_SOURCE_DEPLOY_KEY }}
+          persist-credentials: false
+          path: kubernetes
+
       - name: Build patched kube-proxy.exe and fetch hns.psm1
         run: |
           $ErrorActionPreference = "Stop"
@@ -141,9 +154,7 @@ jobs:
             }
           }
 
-          git -c core.autocrlf=false clone --depth 1 --branch ${{ matrix.source_branch }} https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6.git $env:RUNNER_TEMP\kubernetes
-          Assert-LastExitCode
-          Push-Location $env:RUNNER_TEMP\kubernetes
+          Push-Location $env:GITHUB_WORKSPACE\kubernetes
           git config core.autocrlf false
           if ((git rev-parse HEAD) -ne "${{ matrix.source_sha }}") {
             throw "Kubernetes source branch differs from pinned commit"
