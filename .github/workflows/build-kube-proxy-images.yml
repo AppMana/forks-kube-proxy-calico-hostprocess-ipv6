@@ -166,8 +166,16 @@ jobs:
           $env:GOARCH = "amd64"
           go test ./pkg/proxy/winkernel/...
           Assert-LastExitCode
-          go build -o "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe" .\cmd\kube-proxy
+          $version = "${{ matrix.k8s_version }}+appmana.${{ matrix.source_sha }}"
+          $versionPackage = "k8s.io/component-base/version"
+          $buildDate = ([DateTimeOffset]::Parse((git show -s --format=%cI HEAD))).UtcDateTime.ToString("yyyy-MM-ddTHH:mm:ssZ")
+          $ldflags = "-X $versionPackage.gitVersion=$version -X $versionPackage.gitCommit=${{ matrix.source_sha }} -X $versionPackage.gitTreeState=clean -X $versionPackage.buildDate=$buildDate"
+          $binary = "$env:GITHUB_WORKSPACE\hostprocess\calico\kube-proxy\kube-proxy.exe"
+          go build -trimpath -buildvcs=false -ldflags $ldflags -o $binary .\cmd\kube-proxy
           Assert-LastExitCode
+          $reported = & $binary --version
+          Assert-LastExitCode
+          if ($reported -notmatch [regex]::Escape($version)) { throw "built binary version mismatch: $reported" }
           Pop-Location
           Invoke-WebRequest -OutFile hns.psm1 https://raw.githubusercontent.com/microsoft/SDN/710cad6fc9025c86e04ef5daa6eb53f577802448/Kubernetes/windows/hns.psm1
 
@@ -180,6 +188,9 @@ jobs:
           $windowsImage = "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}${{ needs.metadata.outputs.suffix }}-windows-ltsc2022"
           docker build `
             --build-arg WINDOWS_VERSION=ltsc2022 `
+            --label "org.opencontainers.image.revision=${{ matrix.source_sha }}" `
+            --label "org.opencontainers.image.source=https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6" `
+            --label "org.opencontainers.image.version=${{ matrix.k8s_version }}" `
             -t $windowsImage .
 
       - name: Push Windows image
