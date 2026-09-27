@@ -12,6 +12,9 @@ ghcr.io/appmana/kube-proxy:v1.34.6-appmana.post.12-calico-hostprocess
 
 ghcr.io/appmana/kube-proxy:v1.35.5-appmana.post.8-calico-hostprocess
   sha256:ae693837fc36f98f313aab545fca9799756e94228263d5f586c162e4ee69ffaf
+
+ghcr.io/appmana/kube-proxy:v1.36.4-appmana.post.14-calico-hostprocess
+  sha256:939acb49ff8180d4ffb5cbd3e0f818c99db87b22ce01ece085066c4e05b4ead5
 ```
 
 Version matrix:
@@ -19,12 +22,17 @@ Version matrix:
 ```text
 Kubernetes 1.34.x -> kube-proxy v1.34.6 -> Calico v3.29.6
 Kubernetes 1.35.x -> kube-proxy v1.35.5 -> Calico v3.31.4
+Kubernetes 1.36.x -> kube-proxy v1.36.4 -> Calico v3.32.2
 ```
 
 Each tag contains:
 
-- `linux/amd64`: upstream `registry.k8s.io/kube-proxy:<version>`.
+- `linux/amd64` (and, from v1.36.4, `linux/arm64`): upstream
+  `registry.k8s.io/kube-proxy:<version>`.
 - `windows/amd64/ltsc2022`: AppMana patched HostProcess image.
+
+Releases are published by pushing a git tag equal to one matrix `image_tag` in
+`.github/workflows/build-kube-proxy-images.yml`; only that version is built.
 
 ## Do not use older post tags
 
@@ -44,17 +52,19 @@ non-ILB, which still breaks pod-to-service traffic.
 
 ## What is patched
 
-The Windows kube-proxy patches are generated from the matching branches in
+The Windows kube-proxy fixes live in
 `AppMana/forks-kubernetes-kube-proxy-windows-ipv6`:
 
 ```text
 appmana/windows-kube-proxy-hns-ipv6-v1.34.x
 appmana/windows-kube-proxy-hns-ipv6-v1.35.x
+appmana/windows-kube-proxy-hns-ipv6-v1.36.4   (v1.36.4 tag + fork commits)
 ```
 
-The workflow applies the version-specific patch file, runs
-`go test ./pkg/proxy/winkernel/...`, builds `kube-proxy.exe`, and packages it in
-the HostProcess image.
+The workflow checks out the pinned fork commit (`source_sha`), runs
+`go test ./pkg/proxy/winkernel/...` on Windows Server 2022 and 2025, builds
+`kube-proxy.exe` stamped with that commit, and packages it in the HostProcess
+image. `patches/` keeps the equivalent winkernel diffs against upstream.
 
 The Windows fixes cover:
 
