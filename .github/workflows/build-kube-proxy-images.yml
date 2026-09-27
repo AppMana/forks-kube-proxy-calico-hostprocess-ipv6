@@ -3,6 +3,10 @@ name: Build Kube-Proxy images
 on:
   push:
     branches: [master, "cloud-provisioning/**"]
+    # A release tag names exactly one image_tag below; only that version is
+    # built and published, without a branch suffix, so a release never
+    # rewrites the other versions' tags.
+    tags: ["v*-appmana.post.*-calico-hostprocess"]
   workflow_dispatch:
 
 permissions:
@@ -18,16 +22,37 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       suffix: ${{ steps.tag.outputs.suffix }}
+      matrix: ${{ steps.tag.outputs.matrix }}
     steps:
       - id: tag
         shell: bash
         run: |
+          # post.15/post.11 and later: DSR disabled by default (opt in with
+          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
+          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
+          # DaemonSet livenessProbe; required because k0s 1.36 renders its own
+          # env-less kube-proxy-windows DaemonSet (override the image via k0s
+          # spec.images.windows.kubeproxy). source_sha is a commit of
+          # AppMana/forks-kubernetes-kube-proxy-windows-ipv6.
+          matrix='[
+            {"k8s_version": "v1.34.6", "source_sha": "fbb36641b584f07432649964054986cde373db5f", "go_version": "1.24.x", "image_tag": "v1.34.6-appmana.post.17-calico-hostprocess"},
+            {"k8s_version": "v1.35.5", "source_sha": "9b00f285777b78a8684700b822b5072f5c5de0a2", "go_version": "1.25.x", "image_tag": "v1.35.5-appmana.post.13-calico-hostprocess"},
+            {"k8s_version": "v1.36.2", "source_sha": "6d89988d2cc2ddcdd78138fe827b68232c5df8ab", "go_version": "1.26.x", "image_tag": "v1.36.2-appmana.post.13-calico-hostprocess"},
+            {"k8s_version": "v1.36.4", "source_sha": "5e4cbae1107d8d1d492df0b6351a369e0402027c", "go_version": "1.26.x", "image_tag": "v1.36.4-appmana.post.14-calico-hostprocess"}
+          ]'
           suffix=""
-          if [[ "$GITHUB_REF_NAME" != "master" ]]; then
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            matrix="$(jq -c --arg tag "$GITHUB_REF_NAME" '[.[] | select(.image_tag == $tag)]' <<< "$matrix")"
+            if [[ "$(jq length <<< "$matrix")" != 1 ]]; then
+              echo "tag $GITHUB_REF_NAME names no image_tag in the matrix" >&2
+              exit 1
+            fi
+          elif [[ "$GITHUB_REF_NAME" != "master" ]]; then
             branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g' | cut -c1-40)"
             suffix="-${branch}-${GITHUB_SHA:0:12}"
           fi
           echo "suffix=$suffix" >> "$GITHUB_OUTPUT"
+          echo "matrix=$(jq -c . <<< "$matrix")" >> "$GITHUB_OUTPUT"
 
   script-tests:
     # Mocked behavior tests for the shipped PowerShell (hack/appmana/tests/):
@@ -38,36 +63,12 @@ jobs:
       - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
 
   test-windows-2025:
-    needs: [script-tests]
+    needs: [script-tests, metadata]
     runs-on: windows-2025
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # post.15/post.11: DSR disabled by default (opt in with
-          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
-          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
-          # DaemonSet livenessProbe — required because k0s 1.36 renders its own
-          # env-less kube-proxy-windows DaemonSet (override the image via k0s
-          # spec.images.windows.kubeproxy).
-          - k8s_version: v1.34.6
-            source_branch: cloud-provisioning/hns-reconcile-v1.34.6
-            source_sha: fbb36641b584f07432649964054986cde373db5f
-            go_version: 1.24.x
-            patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
-          - k8s_version: v1.35.5
-            source_branch: cloud-provisioning/hns-reconcile-v1.35.5
-            source_sha: 9b00f285777b78a8684700b822b5072f5c5de0a2
-            go_version: 1.25.x
-            patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
-          - k8s_version: v1.36.2
-            source_branch: cloud-provisioning/hns-reconcile-v1.36.2
-            source_sha: 6d89988d2cc2ddcdd78138fe827b68232c5df8ab
-            go_version: 1.26.x
-            patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
-            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
+        include: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     steps:
       - uses: actions/setup-go@v5
         with:
@@ -99,31 +100,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # post.15/post.11: DSR disabled by default (opt in with
-          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
-          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
-          # DaemonSet livenessProbe — required because k0s 1.36 renders its own
-          # env-less kube-proxy-windows DaemonSet (override the image via k0s
-          # spec.images.windows.kubeproxy).
-          - k8s_version: v1.34.6
-            source_branch: cloud-provisioning/hns-reconcile-v1.34.6
-            source_sha: fbb36641b584f07432649964054986cde373db5f
-            go_version: 1.24.x
-            patch_file: kubernetes-v1.34-winkernel-loadbalancer-state.patch
-            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
-          - k8s_version: v1.35.5
-            source_branch: cloud-provisioning/hns-reconcile-v1.35.5
-            source_sha: 9b00f285777b78a8684700b822b5072f5c5de0a2
-            go_version: 1.25.x
-            patch_file: kubernetes-v1.35-winkernel-loadbalancer-state.patch
-            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
-          - k8s_version: v1.36.2
-            source_branch: cloud-provisioning/hns-reconcile-v1.36.2
-            source_sha: 6d89988d2cc2ddcdd78138fe827b68232c5df8ab
-            go_version: 1.26.x
-            patch_file: kubernetes-v1.36-winkernel-loadbalancer-state.patch
-            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
+        include: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     defaults:
       run:
         working-directory: hostprocess/calico/kube-proxy
@@ -206,16 +183,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Keep in sync with the build-windows matrix image_tag values above —
-        # this job assembles the plain multi-platform manifest tags from the
-        # -windows-ltsc2022 arch tags the build jobs push.
-        include:
-          - k8s_version: v1.34.6
-            image_tag: v1.34.6-appmana.post.17-calico-hostprocess
-          - k8s_version: v1.35.5
-            image_tag: v1.35.5-appmana.post.13-calico-hostprocess
-          - k8s_version: v1.36.2
-            image_tag: v1.36.2-appmana.post.13-calico-hostprocess
+        include: ${{ fromJSON(needs.metadata.outputs.matrix) }}
+    env:
+      DOCKER_CLI_EXPERIMENTAL: enabled
     steps:
       - uses: docker/setup-buildx-action@v3
 
@@ -228,19 +198,28 @@ jobs:
           manifest_image="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.image_tag }}${{ needs.metadata.outputs.suffix }}"
           windows_image="${manifest_image}-windows-ltsc2022"
           upstream_image="registry.k8s.io/kube-proxy:${{ matrix.k8s_version }}"
-          linux_digest="$(
+          # Linux entries are upstream kube-proxy, unchanged: the fork patches
+          # only winkernel.
+          linux_digest() {
             docker buildx imagetools inspect --raw "$upstream_image" |
-              jq -r '.manifests[] | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest' |
-              head -n 1
-          )"
-          if [ -z "$linux_digest" ] || [ "$linux_digest" = "null" ]; then
-            echo "Could not find linux/amd64 digest for $upstream_image" >&2
-            exit 1
-          fi
-
-          docker buildx imagetools create \
-            --tag "$manifest_image" \
-            "${upstream_image}@${linux_digest}" \
-            "$windows_image"
+              jq -er --arg arch "$1" '[.manifests[] | select(.platform.os == "linux" and .platform.architecture == $arch) | .digest] | if length == 1 then .[0] else error("expected one linux/\($arch) entry") end'
+          }
+          amd64="$(linux_digest amd64)"
+          arm64="$(linux_digest arm64)"
+          windows="$(docker buildx imagetools inspect "$windows_image" --format '{{json .Manifest}}' | jq -er 'select(.mediaType | test("manifest\\.v2|image\\.manifest")) | .digest')"
+          # imagetools copies the upstream manifests into this repository but
+          # records no os.version for the Windows entry. Containerd on Server
+          # 2022 matches os.version against the host build, so rewrite the
+          # list from the copied digests with the built image's os.version.
+          docker buildx imagetools create --tag "$manifest_image" \
+            "${upstream_image}@${amd64}" "${upstream_image}@${arm64}" "$windows_image"
+          repo="${manifest_image%:*}"
+          win_config="$(docker buildx imagetools inspect "$windows_image" --format '{{json .Image}}')"
+          win_os_version="$(jq -er 'select(.os == "windows" and .architecture == "amd64") | ."os.version" | select(type == "string" and startswith("10.0.20348."))' <<< "$win_config")"
+          docker manifest create "$manifest_image" "${repo}@${amd64}" "${repo}@${arm64}" "${repo}@${windows}"
+          docker manifest annotate --os windows --arch amd64 --os-version "$win_os_version" "$manifest_image" "${repo}@${windows}"
+          docker manifest push --purge "$manifest_image"
 
           docker buildx imagetools inspect "$manifest_image"
+          docker buildx imagetools inspect --raw "$manifest_image" | jq -e '
+            [.manifests[].platform | "\(.os)/\(.architecture)"] | sort == ["linux/amd64", "linux/arm64", "windows/amd64"]' >/dev/null
