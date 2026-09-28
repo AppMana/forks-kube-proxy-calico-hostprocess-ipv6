@@ -157,8 +157,13 @@ while ($true) {
         Write-Host "kube-proxy exited with code $($proc.ExitCode)."
         exit 1
     }
-    & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $healthScript | Out-Null
-    if ($LASTEXITCODE -NE 0) {
+    # Preserve the native exit code before writing anything else: PowerShell's
+    # LASTEXITCODE is global process state. Keep successful probes quiet, but
+    # retain the failed probe's direct/VIP diagnosis in the container log.
+    $healthOutput = @(& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $healthScript 2>&1)
+    $healthExitCode = $LASTEXITCODE
+    if ($healthExitCode -NE 0) {
+        $healthOutput | ForEach-Object { Write-Host $_ }
         $consecutiveFailures++
         Write-Host "health check failed ($consecutiveFailures consecutive)."
     } else {
