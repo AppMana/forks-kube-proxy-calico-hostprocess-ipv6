@@ -2,7 +2,7 @@ name: Build Kube-Proxy images
 
 on:
   push:
-    branches: [master, "cloud-provisioning/**"]
+    branches: [master, "cloud-provisioning/**", "appmana/kube-proxy-v1.36.4"]
     # A release tag names exactly one image_tag below; only that version is
     # built and published, without a branch suffix, so a release never
     # rewrites the other versions' tags.
@@ -47,7 +47,7 @@ jobs:
               echo "tag $GITHUB_REF_NAME names no image_tag in the matrix" >&2
               exit 1
             fi
-          elif [[ "$GITHUB_REF_NAME" != "master" ]]; then
+          else
             branch="$(printf '%s' "$GITHUB_REF_NAME" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_.-]/-/g' | cut -c1-40)"
             suffix="-${branch}-${GITHUB_SHA:0:12}"
           fi
@@ -60,6 +60,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - run: python3 hack/appmana/tests/test_release_metadata.py
       - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
 
   test-windows-2025:
