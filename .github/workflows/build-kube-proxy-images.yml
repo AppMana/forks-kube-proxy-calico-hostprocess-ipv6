@@ -27,12 +27,10 @@ jobs:
       - id: tag
         shell: bash
         run: |
-          # post.15/post.11 and later: DSR disabled by default (opt in with
-          # KUBEPROXY_ENABLE_DSR=true), health-check VIP defaults to
-          # KUBERNETES_SERVICE_HOST, in-script stale-ELB watchdog replaces the
-          # DaemonSet livenessProbe; required because k0s 1.36 renders its own
-          # env-less kube-proxy-windows DaemonSet (override the image via k0s
-          # spec.images.windows.kubeproxy). source_sha is a commit of
+          # Startup selects the DSR default from the validated CNI identity
+          # and monitors stale ELB policies without requiring DaemonSet env
+          # settings or a liveness probe. Override the image through k0s
+          # spec.images.windows.kubeproxy. source_sha is a commit of
           # AppMana/forks-kubernetes-kube-proxy-windows-ipv6.
           matrix='[
             {"k8s_version": "v1.34.6", "source_sha": "fbb36641b584f07432649964054986cde373db5f", "go_version": "1.24.x", "image_tag": "v1.34.6-appmana.post.17-calico-hostprocess"},

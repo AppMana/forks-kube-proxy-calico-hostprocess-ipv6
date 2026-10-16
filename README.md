@@ -16,7 +16,7 @@ The Windows package includes kube-proxy and its startup/HNS readiness helpers.
 
 Use the [Calico adapter](https://github.com/AppMana/forks-calico-windows-ipv6/tree/appmana-v3.32.2/windows-adapter)
 to generate matching image settings for k0sctl. k0s manages the kube-proxy
-DaemonSets; do not install duplicates. DSR defaults off for mixed-OS L2Bridge.
+DaemonSets; do not install duplicates. DSR defaults off for Calico L2Bridge.
 Windows IPv6 services additionally need Calico's Linux routing fall-through.
 
 | Configuration | Result |
@@ -39,6 +39,12 @@ and ENI MAC. The HNS network must be L2Bridge and match the configured primary
 IPv4 address. Missing native networks wait; malformed or competing native
 configuration never falls back to another network. Without that native CNI
 configuration, the existing `Calico` network default remains in effect.
+
+For a validated native VPC network, startup enables DSR by default so
+cross-node Services can reach Linux backends. `KUBEPROXY_ENABLE_DSR=true`
+explicitly enables DSR for either network; `KUBEPROXY_DISABLE_DSR=true`
+overrides both the default and the enable setting. These settings do not
+bypass native CNI identity validation.
 
 The proxy uses the CNI-created network; it does not create networks or endpoints.
 This startup selection does not qualify traffic, lifecycle behavior, or a new

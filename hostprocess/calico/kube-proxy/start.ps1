@@ -42,24 +42,10 @@ if ($kubeProxyVer -match "v([0-9])\.([0-9]+)") {
     $kubeProxyGE114 = ($major -GT 1 -OR $major -EQ 1 -AND $minor -GE 14)
 }
 
-# Mixed Windows/Linux clusters need DSR off because Windows DSR breaks
-# cross-node ClusterIP routing when the backend resolves to a Linux pod.
-# DSR is disabled by default: the DaemonSet may be rendered by
-# an orchestrator that sets no env at all (k0s 1.36 renders its own
-# kube-proxy-windows DaemonSet with only NODENAME/POD_IP), so the safe
-# behavior must not depend on env vars being present. Set
-# KUBEPROXY_ENABLE_DSR=true to opt in (requires 2019 with KB4580390,
-# Oct 2020). KUBEPROXY_DISABLE_DSR=true is still honored for backward
-# compatibility and wins over the enable flag.
-$PlatformSupportDSR = $false
-if ($env:KUBEPROXY_ENABLE_DSR -EQ "true") {
-    $PlatformSupportDSR = $true
-    Write-Host "DSR enabled via KUBEPROXY_ENABLE_DSR=true env var."
-}
-if ($env:KUBEPROXY_DISABLE_DSR -EQ "true") {
-    $PlatformSupportDSR = $false
-    Write-Host "DSR disabled via KUBEPROXY_DISABLE_DSR=true env var."
-}
+# Derive the default from the validated CNI identity, including when the
+# orchestrator supplies no DSR environment setting. Explicit disable wins.
+$PlatformSupportDSR = Get-HnsProxyDsrEnabled -Networks @(Get-HnsNetwork) -NetworkName $NetworkName -NativeCniConfigPath 'C:\etc\cni\net.d\vpc-bridge.conf' -EnableDSR $env:KUBEPROXY_ENABLE_DSR -DisableDSR $env:KUBEPROXY_DISABLE_DSR
+Write-Host "DSR enabled: $PlatformSupportDSR"
 
 # This is a workaround since the go-client doesn't know about the path $env:CONTAINER_SANDBOX_MOUNT_POINT
 # go-client is going to be address in a future release:

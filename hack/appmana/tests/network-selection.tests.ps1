@@ -21,6 +21,20 @@ function Assert-Rejected($Name, [scriptblock]$Action) {
 }
 try {
     Assert-Selection 'Calico default' @($calico,$native) 'Calico'
+    foreach ($nativeMode in @($false,$true)) {
+        if ($nativeMode) { $config | ConvertTo-Json | Set-Content $configPath }
+        foreach ($enable in @('', 'true')) {
+            foreach ($disable in @('', 'true')) {
+                $expected = ($nativeMode -or $enable -eq 'true') -and $disable -ne 'true'
+                $actual = Get-HnsProxyDsrEnabled -Networks @($calico,$native) -NativeCniConfigPath $configPath -EnableDSR $enable -DisableDSR $disable
+                if ($actual -ne $expected) { throw "Incorrect DSR mode: native=$nativeMode enable=$enable disable=$disable" }
+                $passed++; Write-Host "PASS DSR mode native=$nativeMode enable=$enable disable=$disable"
+            }
+        }
+    }
+    Assert-Rejected 'DSR requires configured network' { Get-HnsProxyDsrEnabled -Networks @($calico) -NativeCniConfigPath $configPath }
+    Assert-Rejected 'DSR override cannot bypass native identity validation' { Get-HnsProxyDsrEnabled -Networks @($calico) -NativeCniConfigPath $configPath -EnableDSR true }
+    Remove-Item $configPath
     if (Get-HnsProxyNetwork -Networks @($native) -NativeCniConfigPath $configPath) { throw 'Selected an unrelated network before CNI configuration' }
     $passed++; Write-Host 'PASS wait before CNI configuration'
     $config | ConvertTo-Json | Set-Content $configPath

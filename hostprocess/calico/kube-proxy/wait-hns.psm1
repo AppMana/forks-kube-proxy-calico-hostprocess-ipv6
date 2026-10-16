@@ -98,4 +98,23 @@ function Wait-HnsNetworkReady {
     }
 }
 
-Export-ModuleMember -Function Wait-HnsNetworkReady, Get-HnsProxyNetwork
+function Get-HnsProxyDsrEnabled {
+    param(
+        [object[]]$Networks,
+        [string]$NetworkName = 'Calico',
+        [string]$NativeCniConfigPath,
+        [string]$EnableDSR,
+        [string]$DisableDSR
+    )
+    $network = Get-HnsProxyNetwork -Networks $Networks -NetworkName $NetworkName -NativeCniConfigPath $NativeCniConfigPath
+    if (-not $network) { throw 'Cannot select DSR mode before the configured HNS network exists' }
+
+    # Native VPC L2Bridge uses DSR for cross-node Services. Preserve the Calico
+    # default and let an explicit disable take precedence over either default.
+    $enabled = [bool]($NativeCniConfigPath -and (Test-Path -LiteralPath $NativeCniConfigPath))
+    if ($EnableDSR -eq 'true') { $enabled = $true }
+    if ($DisableDSR -eq 'true') { $enabled = $false }
+    return $enabled
+}
+
+Export-ModuleMember -Function Wait-HnsNetworkReady, Get-HnsProxyNetwork, Get-HnsProxyDsrEnabled
