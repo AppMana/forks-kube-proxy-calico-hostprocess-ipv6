@@ -24,14 +24,12 @@ ipmo -Force .\hns.psm1
 
 Write-Host "Running kub-proxy service."
 
-# Now, wait for the Calico network to be created. Wait-HnsNetworkReady
-# timeout-guards every HNS query (tested in hack/appmana/tests/): a
-# Get-HnsNetwork call issued while the HNS service is restarting can block
-# forever inside the RPC, which permanently froze an unguarded loop here on
-# all three Windows nodes on 2026-07-07.
+# The CNI initializer may run after this container starts. Re-evaluate its
+# native network identity inside each bounded HNS query; Calico remains the
+# default when no native AWS configuration exists.
 ipmo -Force .\wait-hns.psm1
-Write-Host "Waiting for HNS network $NetworkName to be created..."
-Wait-HnsNetworkReady -NetworkName $NetworkName -HnsModulePath (Join-Path $PSScriptRoot 'hns.psm1')
+Write-Host "Waiting for the configured HNS network to be created..."
+$NetworkName = Wait-HnsNetworkReady -NetworkName $NetworkName -HnsModulePath (Join-Path $PSScriptRoot 'hns.psm1') -NativeCniConfigPath 'C:\etc\cni\net.d\vpc-bridge.conf' -PassThru
 Write-Host "HNS network $NetworkName found."
 
 # Determine the kube-proxy version.
@@ -46,7 +44,7 @@ if ($kubeProxyVer -match "v([0-9])\.([0-9]+)") {
 
 # Mixed Windows/Linux clusters need DSR off because Windows DSR breaks
 # cross-node ClusterIP routing when the backend resolves to a Linux pod.
-# DSR is DISABLED BY DEFAULT since post.11: the DaemonSet may be rendered by
+# DSR is disabled by default: the DaemonSet may be rendered by
 # an orchestrator that sets no env at all (k0s 1.36 renders its own
 # kube-proxy-windows DaemonSet with only NODENAME/POD_IP), so the safe
 # behavior must not depend on env vars being present. Set
@@ -121,13 +119,8 @@ if ($extraFeatures.Length -GT 0) {
     Write-Host "Enabling feature gates: $extraFeatures."
 }
 
-# kube-proxy doesn't handle resync if there are pre-existing ELB policies, clean
-# THEM out before (re)starting kube-proxy. Wipe ELB-type only — wiping ALL
-# PolicyLists destroys non-ELB Calico-managed policies (route encapsulation,
-# OutBoundNAT exception lists, etc.) that pods on this node depend on for their
-# IPv4 default gateway. Symptom: fresh pods get pod IP but no IPv4 default
-# route, so pod->ClusterIP and pod->WAN both silently time out (this is what
-# nuked Unity pods on appmana-003 and -005 on 2026-05-08).
+# Clear stale ELB policies before starting kube-proxy. Preserve non-ELB
+# CNI policies such as route encapsulation and outbound NAT exceptions.
 $policyLists = Get-HnsPolicyList | Where-Object {
     $_.Policies | Where-Object { $_.Type -eq 'ELB' }
 }
@@ -140,7 +133,7 @@ Write-Host "Start to run $kproxy $argList"
 # since the value in the config file may be a regex.
 $env:KUBE_NETWORK=$NetworkName
 
-# Since post.11 kube-proxy runs as a child process with an in-script stale-ELB
+# kube-proxy runs as a child process with an in-script stale-ELB
 # watchdog instead of a DaemonSet livenessProbe: the DaemonSet may be rendered
 # by an orchestrator (k0s 1.36) whose template carries no probe, so the
 # restart-on-stale-ELB behavior has to live inside the container. The watchdog

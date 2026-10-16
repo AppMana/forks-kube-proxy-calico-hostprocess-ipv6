@@ -11,6 +11,7 @@ Run locally (PowerShell Core is fine, no Windows needed):
 
 ```sh
 pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
+pwsh -NoProfile -File hack/appmana/tests/network-selection.tests.ps1
 ```
 
 CI runs the tests in the build workflow before images are built, so a
@@ -24,8 +25,12 @@ Covers `hostprocess/calico/kube-proxy/wait-hns.psm1`
 1. network already present: returns promptly
 2. network appears after a few polls: returns after retrying
 3. **query call blocks forever**: must still complete once a later query
-   succeeds. This is the 2026-07-07 production regression: a
-   `Get-HnsNetwork` issued while the HNS service restarts (node reboot,
-   kubelet swap) never returns, and an unguarded in-process loop therefore
-   froze kube-proxy startup on all three Windows nodes for an hour. The wait
-   must bound every query with a timeout and retry in a fresh process.
+   succeeds. Each HNS query is bounded and retried in a fresh process.
+
+## network-selection.tests.ps1
+
+Checks the Calico fallback, native AWS identity selection, missing networks,
+late CNI initialization, and rejection of malformed or competing configuration,
+ambiguous HNS identities, wrong network type, and wrong management address.
+The default bounded query is exercised with a mocked HNS module. CI runs both
+suites under native Windows PowerShell as well as PowerShell on Linux.

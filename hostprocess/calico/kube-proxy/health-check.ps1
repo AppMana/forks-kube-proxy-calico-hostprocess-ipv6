@@ -1,10 +1,8 @@
 # Liveness probe for kube-proxy-windows. Detects the stale-ELB failure mode
 # where HNS/VFP silently stops enforcing ClusterIP load balancers while
 # kube-proxy's view (including live HCN sourceVip/flags) still looks correct:
-# the May 8 and June 9, 2026 incidents on the AppMana cluster, where
-# host/pod -> ClusterIP traffic timed out for ~1h while direct endpoint IPs
-# worked, and only a kube-proxy container restart (whose start.ps1 wipes and
-# rebuilds all ELB PolicyLists) repaired it.
+# direct endpoint traffic can remain healthy while Service VIP traffic fails.
+# Restarting kube-proxy lets its startup path rebuild stale ELB policies.
 #
 # Logic: fail ONLY when the apiserver is reachable directly (so the apiserver
 # itself is healthy and the node has connectivity) but the apiserver

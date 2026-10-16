@@ -62,6 +62,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 hack/appmana/tests/test_release_metadata.py
       - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
+      - run: pwsh -NoProfile -File hack/appmana/tests/network-selection.tests.ps1
 
   test-windows-2025:
     needs: [script-tests, metadata]
@@ -71,6 +72,15 @@ jobs:
       matrix:
         include: ${{ fromJSON(needs.metadata.outputs.matrix) }}
     steps:
+      - uses: actions/checkout@v4
+      - name: Test shipped network selection on native PowerShell
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -NonInteractive -File hack/appmana/tests/wait-hns.tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "HNS wait tests failed" }
+          powershell.exe -NoProfile -NonInteractive -File hack/appmana/tests/network-selection.tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "network selection tests failed" }
       - uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go_version }}
@@ -110,6 +120,14 @@ jobs:
       image-name: ${{ env.IMAGE_NAME }}
     steps:
       - uses: actions/checkout@v4
+      - name: Test shipped network selection on native PowerShell
+        working-directory: ${{ github.workspace }}
+        shell: pwsh
+        run: |
+          powershell.exe -NoProfile -NonInteractive -File hack/appmana/tests/wait-hns.tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "HNS wait tests failed" }
+          powershell.exe -NoProfile -NonInteractive -File hack/appmana/tests/network-selection.tests.ps1
+          if ($LASTEXITCODE -ne 0) { throw "network selection tests failed" }
 
       - uses: actions/setup-go@v5
         with:

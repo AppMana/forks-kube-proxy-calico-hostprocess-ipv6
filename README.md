@@ -29,3 +29,17 @@ Windows IPv6 services additionally need Calico's Linux routing fall-through.
 
 [Source fork](https://github.com/AppMana/forks-kubernetes-kube-proxy-windows-ipv6) ·
 [Build configuration and older versions](.github/workflows/build-kube-proxy-images.yml)
+
+## Native AWS CNI network selection
+
+Startup polls `C:\etc\cni\net.d\vpc-bridge.conf` alongside HNS, including when
+CNI initialization occurs after the proxy container starts. A sole, valid
+`vpc-bridge` configuration selects the provider's network name from its CNI name
+and ENI MAC. The HNS network must be L2Bridge and match the configured primary
+IPv4 address. Missing native networks wait; malformed or competing native
+configuration never falls back to another network. Without that native CNI
+configuration, the existing `Calico` network default remains in effect.
+
+The proxy uses the CNI-created network; it does not create networks or endpoints.
+This startup selection does not qualify traffic, lifecycle behavior, or a new
+image for deployment. Run those checks with the resulting immutable image.

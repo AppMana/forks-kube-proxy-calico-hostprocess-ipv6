@@ -1,6 +1,6 @@
 # Mocked tests for Wait-HnsNetworkReady (see README.md). Plain asserts, no
 # Pester dependency. Exits nonzero on any failure. Each case bounds its own
-# runtime; the blocking-query case is the 2026-07-07 production regression.
+# runtime; the blocking-query case exercises recovery from a hung HNS RPC.
 $ErrorActionPreference = 'Stop'
 $modulePath = Join-Path $PSScriptRoot '..\..\..\hostprocess\calico\kube-proxy\wait-hns.psm1'
 Import-Module $modulePath -Force
@@ -56,7 +56,7 @@ Wait-HnsNetworkReady -NetworkName Calico -QueryTimeoutSeconds 5 -PollIntervalSec
     } -QueryArgumentList @($stateDir)
 '@)
 
-# Case 3 (2026-07-07 regression): the first query call blocks forever; later
+# Case 3: the first query call blocks forever; later
 # calls succeed. An unguarded loop never returns; the guarded wait must
 # complete well under a minute.
 $case3 = [scriptblock]::Create($common + "`n" + @'
