@@ -38,7 +38,7 @@ jobs:
             {"k8s_version": "v1.34.6", "source_sha": "fbb36641b584f07432649964054986cde373db5f", "go_version": "1.24.x", "image_tag": "v1.34.6-appmana.post.17-calico-hostprocess"},
             {"k8s_version": "v1.35.5", "source_sha": "9b00f285777b78a8684700b822b5072f5c5de0a2", "go_version": "1.25.x", "image_tag": "v1.35.5-appmana.post.13-calico-hostprocess"},
             {"k8s_version": "v1.36.2", "source_sha": "6d89988d2cc2ddcdd78138fe827b68232c5df8ab", "go_version": "1.26.x", "image_tag": "v1.36.2-appmana.post.13-calico-hostprocess"},
-            {"k8s_version": "v1.36.4", "source_sha": "e555b600fe964990b1cd1e6742139bf5c4c43ba0", "go_version": "1.26.x", "image_tag": "v1.36.4-appmana.post.14-calico-hostprocess"}
+            {"k8s_version": "v1.36.4", "source_sha": "5e4cbae1107d8d1d492df0b6351a369e0402027c", "go_version": "1.26.x", "image_tag": "v1.36.4-appmana.post.14-calico-hostprocess"}
           ]'
           suffix=""
           if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
