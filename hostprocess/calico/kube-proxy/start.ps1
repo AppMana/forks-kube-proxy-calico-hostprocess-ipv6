@@ -73,10 +73,13 @@ mkdir -force /var/lib/kube-proxy/
 ((Get-Content -path $env:CONTAINER_SANDBOX_MOUNT_POINT/var/lib/kube-proxy/kubeconfig.conf -Raw) -replace '/var',"$($env:CONTAINER_SANDBOX_MOUNT_POINT)/var") | Set-Content -Path $env:CONTAINER_SANDBOX_MOUNT_POINT/var/lib/kube-proxy/kubeconfig-win.conf
 cp $env:CONTAINER_SANDBOX_MOUNT_POINT/var/lib/kube-proxy/kubeconfig-win.conf /var/lib/kube-proxy/kubeconfig.conf
 
-# Build up the arguments for starting kube-proxy.
+# Build up the arguments for starting kube-proxy. Default verbosity to --v=0
+# (errors/warnings only) to avoid multi-GiB/day Info log churn on Windows NVMe;
+# allow explicit opt-in via KUBE_PROXY_V when debugging.
+$kubeProxyVerbosity = if ($env:KUBE_PROXY_V) { $env:KUBE_PROXY_V } else { "0" }
 $argList = @(`
     "--hostname-override=$env:NODENAME", `
-    "--v=4",`
+    "--v=$kubeProxyVerbosity",`
     "--proxy-mode=kernelspace",`
     "--kubeconfig=$env:CONTAINER_SANDBOX_MOUNT_POINT/var/lib/kube-proxy/kubeconfig-win.conf"`
 )
