@@ -62,6 +62,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: python3 hack/appmana/tests/test_release_metadata.py
       - run: pwsh -NoProfile -File hack/appmana/tests/wait-hns.tests.ps1
+      - run: pwsh -NoProfile -File hack/appmana/tests/watchdog.tests.ps1
 
   test-windows-2025:
     needs: [script-tests, metadata]
