@@ -50,6 +50,23 @@ class PublicationMetadata(unittest.TestCase):
         self.assertEqual(values["suffix"], "")
         self.assertEqual([v["image_tag"] for v in json.loads(values["matrix"])], [tag])
 
+    def test_each_release_line_selects_its_own_version(self):
+        import json
+        for branch, tag, version in (
+            ("appmana/kube-proxy-v1.36.4", "v1.36.4-appmana.post.14-calico-hostprocess", "v1.36.4"),
+            ("appmana/kube-proxy-v1.37.2", "v1.37.2-appmana.post.1-calico-hostprocess", "v1.37.2"),
+        ):
+            with self.subTest(tag=tag):
+                result, values = metadata("tag", tag)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(values["suffix"], "")
+                selected = json.loads(values["matrix"])
+                self.assertEqual([v["image_tag"] for v in selected], [tag])
+                self.assertEqual(selected[0]["k8s_version"], version)
+                self.assertRegex(selected[0]["source_sha"], r"^[0-9a-f]{40}$")
+                source = (ROOT / WORKFLOW).read_text()
+                self.assertIn(f'"{branch}"', source.split("tags:")[0])
+
     def test_unknown_release_refused(self):
         result, _ = metadata("tag", "v1.36.4-appmana.post.999-calico-hostprocess")
         self.assertNotEqual(result.returncode, 0)
