@@ -27,7 +27,7 @@ Windows IPv6 services additionally need Calico's Linux routing fall-through.
 
 | Configuration | Result |
 | --- | --- |
-| Windows 2022/2025 native tests and three-platform package | [tested](https://github.com/AppMana/forks-kube-proxy-calico-hostprocess-ipv6/actions/runs/36345996183) |
+| Windows 2022/2025 native tests and three-platform package | [tested](https://github.com/AppMana/forks-kube-proxy-calico-hostprocess-ipv6/actions/runs/43484935740) |
 | k0s 1.36.4, Linux + Windows 2022 BGP services | [tested](https://github.com/AppMana/k0s-containerd-calico-windows-integration/tree/ec4c527520826a7ab3555fd16ff94453fd508094) |
 | k0s 1.37.2, Linux + Windows 2022 BGP services | unknown |
 | Windows IPv6 ClusterIP without Linux fall-through | fails |
