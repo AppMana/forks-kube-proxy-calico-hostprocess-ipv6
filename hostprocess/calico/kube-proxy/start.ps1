@@ -129,8 +129,7 @@ if ($extraFeatures.Length -GT 0) {
 # PolicyLists destroys non-ELB Calico-managed policies (route encapsulation,
 # OutBoundNAT exception lists, etc.) that pods on this node depend on for their
 # IPv4 default gateway. Symptom: fresh pods get pod IP but no IPv4 default
-# route, so pod->ClusterIP and pod->WAN both silently time out (this is what
-# nuked Unity pods on appmana-003 and -005 on 2026-05-08).
+# route, so pod->ClusterIP and pod->WAN both silently time out.
 $policyLists = Get-HnsPolicyList | Where-Object {
     $_.Policies | Where-Object { $_.Type -eq 'ELB' }
 }
